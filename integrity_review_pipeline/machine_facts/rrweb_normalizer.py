@@ -1,0 +1,36 @@
+"""Map raw rrweb type-5 custom event tags to canonical MachineFactKind values."""
+
+from __future__ import annotations
+
+from .kinds import MachineFactKind
+
+RRWEB_EVENT_TAG_TO_KIND: dict[str, MachineFactKind] = {
+    "USER_FACE_NOT_DETECTED_POPUP_APPEARED": MachineFactKind.FACE_NOT_VISIBLE_WARNING,
+    "USER_FACE_NOT_DETECTED": MachineFactKind.FACE_NOT_VISIBLE_WARNING,
+    "FACE_NOT_DETECTED": MachineFactKind.FACE_NOT_VISIBLE_WARNING,
+    "FACE_DETECTION_WARNING": MachineFactKind.FACE_NOT_VISIBLE_WARNING,
+    "USER_FACE_WARNING_DISMISSED": MachineFactKind.FACE_WARNING_DISMISSED,
+    "FACE_WARNING_DISMISSED": MachineFactKind.FACE_WARNING_DISMISSED,
+    "CAMERA_BLOCKED": MachineFactKind.CAMERA_BLOCKED,
+    "CAMERA_DISABLED": MachineFactKind.CAMERA_BLOCKED,
+    "USER_MOVED_OUT_OF_EXAM_WINDOW": MachineFactKind.WINDOW_BLUR,
+    "WINDOW_BLUR": MachineFactKind.WINDOW_BLUR,
+    "TAB_VISIBILITY_HIDDEN": MachineFactKind.TAB_SWITCH,
+    "TAB_SWITCH": MachineFactKind.TAB_SWITCH,
+    "WINDOW_FOCUS": MachineFactKind.WINDOW_FOCUS,
+    "TAB_VISIBILITY_VISIBLE": MachineFactKind.WINDOW_FOCUS,
+    "USER_EXITED_FULLSCREEN_MODE": MachineFactKind.FULLSCREEN_EXIT,
+    "FULLSCREEN_EXIT": MachineFactKind.FULLSCREEN_EXIT,
+    "FULLSCREEN_EXITED": MachineFactKind.FULLSCREEN_EXIT,
+    "COPY": MachineFactKind.COPY,
+    "PASTE": MachineFactKind.PASTE,
+    "MIC_DISABLED": MachineFactKind.MIC_DISABLED,
+    "MICROPHONE_DISABLED": MachineFactKind.MIC_DISABLED,
+    "SECOND_MONITOR_DETECTED": MachineFactKind.SECOND_MONITOR_DETECTED,
+    "NOISE_DETECTED_DURING_EXAM": MachineFactKind.NOISE_DETECTED,
+    "NOISE_DETECTED": MachineFactKind.NOISE_DETECTED,
+}
+
+
+def normalize_rrweb_event_kind(raw_event_tag: str) -> MachineFactKind:
+    return RRWEB_EVENT_TAG_TO_KIND.get(raw_event_tag, MachineFactKind.UNKNOWN)

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Secrets and local env
+.env
+.env.*
+
+# Local review payload (signed URLs) and generated results
+input/input.json
+output/*
+!output/.gitkeep
+
+# Media / large artifacts
+*.webm
+*.mp4
+*.json.gz
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

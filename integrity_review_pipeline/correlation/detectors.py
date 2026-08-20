@@ -1,0 +1,57 @@
+"""Behavioral correlation detectors — port of correlationEngine.ts (behavioral scope only)."""
+
+from __future__ import annotations
+
+from .contracts import DEFAULT_CORRELATION_CONFIG, CorrelationConfig, DetectCtx, RiskContribution
+from .detectors_impl import (
+    detect_all_factors,
+    detect_av_mismatch_then_input,
+    detect_blur_fast_correct,
+    detect_camera_absent_fast_correct,
+    detect_deterministic_paste_workflow,
+    detect_external_resource_then_paste,
+    detect_face_absent_during_input,
+    detect_face_absent_then_paste,
+    detect_gaze_fast_correct,
+    detect_gaze_off_then_input,
+    detect_gaze_off_then_speech_then_answer,
+    detect_gaze_then_answer_commit,
+    detect_gaze_then_correct_mcq_burst,
+    detect_gaze_with_device,
+    detect_idle_gap_then_fast_correct,
+    detect_idle_then_large_paste,
+    detect_improbable_hard_fast_paste,
+    detect_interact_speech_input_correct,
+    detect_large_unattributed_gap,
+    detect_out_of_order_submission_hop,
+    detect_paste_after_blur,
+    detect_paste_on_coding_question,
+    detect_phone_fast_correct,
+    detect_phone_fast_mcq_answers,
+    detect_second_person_then_paste_or_correct,
+    detect_speech_coaching_then_fast_correct,
+    detect_speech_then_correct_hard,
+    detect_video_overlap,
+    detect_whisper_then_paste,
+)
+
+EXCLUDED_DETECTORS = [
+    "detect_section_score_time_implausible",
+    "detect_question_peer_outlier",
+    "detect_performance_difficulty_mismatch",
+    "detect_fast_correct_high_plagiarism",
+    "apply_plagiarism_corroboration",
+    "detect_second_person_then_score_jump",
+    "detect_blur_then_score_jump",
+    "detect_section_perf_video_cooccurrence",
+]
+
+__all__ = [
+    "DEFAULT_CORRELATION_CONFIG",
+    "CorrelationConfig",
+    "DetectCtx",
+    "EXCLUDED_DETECTORS",
+    "RiskContribution",
+    "detect_all_factors",
+    "detect_paste_after_blur",
+]

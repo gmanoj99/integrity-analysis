@@ -1,0 +1,99 @@
+# Integrity Review Pipeline
+
+Standalone Python 3.11+ port of the camera, screen, and rrweb integrity-analysis
+path. It has no Django, database, queue, cohort, coding-skill, plagiarism, or
+physical clip-extraction dependency.
+
+## Local signed-URL run
+
+1. Create and install the isolated environment:
+
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/pip install -e ".[test]"
+   ```
+
+2. Copy `input/input.example.json` to `input/input.json` and replace the example
+   values. `activityTimeline` and `sections` are required because they anchor T0
+   and section coverage.
+
+3. Set the Gemini key and run:
+
+   ```bash
+   export GEMINI_API_KEY="..."
+   .venv/bin/python run_review.py
+   ```
+
+The validated result is written atomically to `output/evidence_bundle.json`.
+Both the signed-URL input and generated output are gitignored.
+
+## Input contract
+
+```json
+{
+  "candidateId": "attempt-user-id",
+  "assessmentId": "org-assessment-id",
+  "cameraRecordings": ["https://signed-camera-chunk.webm"],
+  "sessionRecordings": ["https://signed-session-chunk.json"],
+  "activityTimeline": [
+    {
+      "eventType": "ASSESSMENT_STARTED",
+      "timestamp": 1700000000000,
+      "order": 0
+    }
+  ],
+  "sections": [
+    {
+      "examAttemptId": "exam-attempt-id",
+      "examId": "exam-id",
+      "sectionType": "mcq",
+      "title": "MCQ"
+    }
+  ]
+}
+```
+
+`sessionRecordings` must resolve to one mode per review:
+
+- rrweb: `{epoch}.json` or `{epoch}.json.gz`
+- old screen: `{epoch}__{duration}.json` containing a base64 WebM data URL
+- new screen: `{epoch}__{duration}.webm`, optionally accompanied by
+  `__events.json.gz` / `__metadata.json.gz` sidecars
+
+Mixed screen and rrweb media is rejected. Camera is always analyzed.
+
+## Pipeline
+
+1. URL classification and evidence manifests
+2. Canonical activity timeline and one master timeline
+3. Camera perception and conditional screen perception (Gemini Flash)
+4. Conditional rrweb machine facts and deterministic findings
+5. Candidate-only baseline and behavioral correlation
+6. Deliberation (one Gemini Pro call)
+7. Deterministic scoring and EvidenceBundle assembly
+
+The final bundle omits the intentionally out-of-scope `questionInsights` and
+`performanceEvidence` sections. `trackBObservations` remains in JSON for target
+contract compatibility, while the Python implementation uses `findings/`
+internally.
+
+## Media and clips
+
+Camera/raw WebM is supplied to Gemini using its signed URL. Legacy JSON-wrapped
+screen recordings are downloaded, gunzipped when needed, decoded, and supplied
+inline. rrweb JSON is parsed locally and never sent to Gemini.
+
+No physical clips are generated. Bundle clips contain offsets into original
+recordings, and `mediaIndex` maps each chunk to its test signed URL. The future
+ECS adapter can replace `sourceRef` with an S3 key without changing analysis.
+
+## Tests
+
+```bash
+.venv/bin/pytest tests
+```
+
+The suite covers URL classification, old/new media decoding, timeline
+synchronization, perception parsing, machine facts, findings, baseline,
+correlation, deliberation rules, scoring, bundle assembly, and an end-to-end
+`input.json` to `EvidenceBundle` run using deterministic fakes.

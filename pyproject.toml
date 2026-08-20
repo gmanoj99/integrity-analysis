@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "integrity-review-pipeline"
+version = "0.1.0"
+description = "Standalone camera, screen, and rrweb integrity review pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "google-genai>=1.33.0",
+  "httpx>=0.28.1",
+  "pydantic>=2.11.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "deepdiff>=8.6.0",
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.setuptools.packages.find]
+include = ["integrity_review_pipeline*"]
