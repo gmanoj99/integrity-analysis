@@ -36,7 +36,7 @@ def _signal(**overrides) -> RawCandidateSignal:
     return base
 
 
-def test_track_b_only_confirmed_has_zero_weight_like_ts() -> None:
+def test_track_b_only_confirmed_drives_corrected_python_score() -> None:
     finding = MergedFinding(
         id="mf_1",
         corroboration_status="track_b_only",
@@ -48,7 +48,7 @@ def test_track_b_only_confirmed_has_zero_weight_like_ts() -> None:
         reasoning="strong",
         score_weight=0.0,
     )
-    assert _compute_finding_weight(finding) == 0.0
+    assert _compute_finding_weight(finding) == 1.0
 
 
 def test_track_b_only_ai_detected_scores_at_085() -> None:

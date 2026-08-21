@@ -8,7 +8,7 @@ from typing import Any, Literal
 from ..contracts.evidence_bundle import ClipRef, ClipSegment, MediaIndexEntry
 from ..duck_helpers import attr
 
-EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v26"
+EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v27"
 
 
 def _artifact_type_to_evidence(artifact_type: str) -> Literal["video", "screen"] | None:
@@ -76,14 +76,12 @@ def resolve_offset_clip_ref(
         segments=segments,
         clip_start_ms=event_ms,
         clip_end_ms=end_ms,
-        duration_ms=max(duration_ms, end_ms - event_ms),
         cache_key=cache_key,
-        seek_to_ms=segments[0].seek_to_ms,
     )
 
 
 def compute_evidence_bundle_version_hash(deliberation_composite_hash: str) -> str:
-    bundle_version = hashlib.sha256(b"deterministic|scope5-v26").hexdigest()[:16]
+    bundle_version = hashlib.sha256(b"deterministic|scope5-v27").hexdigest()[:16]
     correlated_version = hashlib.sha256(b"deterministic|scope35-v10").hexdigest()[:16]
     payload = (
         f"{EVIDENCE_BUNDLE_LOGIC_VERSION}|{deliberation_composite_hash}|"

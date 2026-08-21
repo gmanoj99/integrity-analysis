@@ -499,8 +499,50 @@ def _story_has_template_echo(text: str) -> bool:
     return any(pattern.search(text) for pattern in FORBIDDEN_STORY_TEMPLATE_PATTERNS)
 
 
+def _as_int_list(value: Any) -> list[int]:
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [int(value)]
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            out.append(int(item))
+        elif isinstance(item, str) and item.strip().lstrip("-").isdigit():
+            out.append(int(item.strip()))
+    return out
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if item is not None and str(item).strip()]
+
+
+def _normalize_proof_anchors(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        window_ids: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                window_ids.append(item.strip())
+            elif isinstance(item, dict):
+                window_id = item.get("windowId") or item.get("window_id")
+                if window_id:
+                    window_ids.append(str(window_id))
+        return {"windowIds": window_ids}
+    return {}
+
+
 def parse_integrity_story(raw: dict[str, Any] | None) -> IntegrityStory | None:
-    if not raw:
+    if not isinstance(raw, dict):
         return None
     headline = str(raw.get("headline", "")).strip()
     what = str(raw.get("whatHappened", raw.get("what_happened", ""))).strip()
@@ -515,19 +557,27 @@ def parse_integrity_story(raw: dict[str, Any] | None) -> IntegrityStory | None:
     severity: IntegrityStorySeverity = (
         severity_raw if severity_raw in {"probable", "suspicious", "weak"} else "suspicious"
     )
-    anchors_raw = raw.get("proofAnchors") or raw.get("proof_anchors") or {}
+    anchors_raw = _normalize_proof_anchors(
+        raw.get("proofAnchors") if raw.get("proofAnchors") is not None else raw.get("proof_anchors")
+    )
     anchors = IntegrityStoryProofAnchors(
-        window_ids=list(anchors_raw.get("windowIds") or anchors_raw.get("window_ids") or []),
-        machine_fact_kinds=list(
-            anchors_raw.get("machineFactKinds") or anchors_raw.get("machine_fact_kinds") or []
+        window_ids=_as_str_list(
+            anchors_raw.get("windowIds") or anchors_raw.get("window_ids")
         ),
-        audio_quotes_en=list(
-            anchors_raw.get("audioQuotesEn") or anchors_raw.get("audio_quotes_en") or []
+        machine_fact_kinds=_as_str_list(
+            anchors_raw.get("machineFactKinds") or anchors_raw.get("machine_fact_kinds")
         ),
-        seek_ms_hints=list(
-            anchors_raw.get("seekMsHints") or anchors_raw.get("seek_ms_hints") or []
+        audio_quotes_en=_as_str_list(
+            anchors_raw.get("audioQuotesEn") or anchors_raw.get("audio_quotes_en")
         ),
-        factor_ids=list(anchors_raw.get("factorIds") or anchors_raw.get("factor_ids") or []),
+        seek_ms_hints=[
+            int(item)
+            for item in (
+                anchors_raw.get("seekMsHints") or anchors_raw.get("seek_ms_hints") or []
+            )
+            if isinstance(item, (int, float, str)) and str(item).strip().lstrip("-").isdigit()
+        ],
+        factor_ids=_as_str_list(anchors_raw.get("factorIds") or anchors_raw.get("factor_ids")),
     )
     return IntegrityStory(
         headline=headline,
@@ -535,7 +585,9 @@ def parse_integrity_story(raw: dict[str, Any] | None) -> IntegrityStory | None:
         why_it_matters=why or "Reviewer should inspect the attached proof.",
         honest_alternative=honest or "An innocent explanation may still apply.",
         severity=severity,
-        involved_questions=list(raw.get("involvedQuestions") or raw.get("involved_questions") or []),
+        involved_questions=_as_int_list(
+            raw.get("involvedQuestions") or raw.get("involved_questions")
+        ),
         proof_anchors=anchors,
     )
 

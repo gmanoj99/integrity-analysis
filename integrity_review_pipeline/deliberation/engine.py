@@ -22,8 +22,10 @@ from ..contracts.deliberation import (
 from ..prompts.deliberation import (
     DELIBERATION_PROMPT_VERSION,
     DELIBERATION_SYSTEM_PROMPT,
+    TRACK2_CAPS,
     build_deliberation_user_prompt,
 )
+from ..scoring.unified_score import compute_unified_score
 from .episodes import (
     DeliberationEpisode,
     build_episode_analysis_entries,
@@ -33,16 +35,13 @@ from .episodes import (
 from ..duck_helpers import attr, fact_kind
 from .rules import (
     DELIBERATION_MODEL_VERSION,
+    FIELD_PATH_RESOLVERS,
     KNOWN_BASELINE_METRICS,
     RawCandidateSignal,
     RawEpisodeAnalysis,
     SIGNAL_TYPES,
-    active_validated_signals,
-    apply_confidence_caps,
     compute_deliberation_version_hash,
     compute_informative_content_ratio,
-    derive_category,
-    derive_confidence,
     derive_source_types,
     filter_audio_quotes_against_perception,
     parse_integrity_story,
@@ -109,6 +108,38 @@ def _extract_balanced_object(text: str) -> str | None:
     return None
 
 
+def _pick_raw_text(raw: Mapping[str, Any], camel: str, snake: str, default: str = "") -> str:
+    value = raw.get(camel)
+    if value is None:
+        value = raw.get(snake)
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _pick_raw_list(raw: Mapping[str, Any], camel: str, snake: str) -> list[str]:
+    value = raw.get(camel)
+    if value is None:
+        value = raw.get(snake)
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if item is not None and str(item).strip()]
+
+
+def _looks_like_clear_prose(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "no significant integrity",
+            "no integrity concerns",
+            "no concerns were identified",
+            "adequate explanations",
+            "no action required",
+        )
+    )
+
+
 def _parse_confidence(value: Any, default: float = 0.5) -> float:
     """Match TS: only numeric confidence is trusted; strings default to 0.5."""
     if isinstance(value, (int, float)):
@@ -143,12 +174,27 @@ def parse_raw_output(text: str) -> dict[str, Any]:
 def _serialize_machine_facts(bundle: Any) -> str:
     facts = getattr(bundle, "facts", []) or []
     lines = [
-        f"SESSION: duration={_fmt_ms(int(_attr(bundle, 'duration_ms', 'durationMs', default=0) or 0))}"
+        f"SESSION: duration={_fmt_ms(int(_attr(bundle, 'duration_ms', 'durationMs', default=0) or 0))}",
+        "MACHINE_FACT_DETAIL_ROWS:",
     ]
-    large_pastes = [f for f in facts if _fact_kind(f) == "LARGE_PASTE"]
-    lines.append(f"\nLARGE_PASTE: count={len(large_pastes)}")
-    blurs = [f for f in facts if _fact_kind(f) == "WINDOW_BLUR"]
-    lines.append(f"\nWINDOW_BLUR: count={len(blurs)}")
+    counts: dict[str, int] = {}
+    for fact in facts:
+        kind = _fact_kind(fact)
+        if kind:
+            counts[kind] = counts.get(kind, 0) + 1
+    lines.append(
+        "COUNTS: "
+        + (", ".join(f"{kind}={count}" for kind, count in sorted(counts.items())) or "(none)")
+    )
+    for fact in facts[: TRACK2_CAPS["machine_fact_detail_rows"]]:
+        kind = _fact_kind(fact)
+        start = int(_attr(fact, "start_offset_ms", "startOffsetMs", default=0) or 0)
+        end = int(_attr(fact, "end_offset_ms", "endOffsetMs", default=start) or start)
+        detail = _attr(fact, "detail", default={}) or {}
+        lines.append(
+            f"  - {kind} [{start},{end}] source={_attr(fact, 'evidence_source', 'evidenceSource', default='unknown')} "
+            f"attribution={_attr(fact, 'attribution', default='unclear')} detail={json.dumps(detail, default=str)}"
+        )
     return "\n".join(lines)
 
 
@@ -161,15 +207,21 @@ def _attr(obj: Any, *names: str, default: Any = None) -> Any:
 
 
 def _serialize_baseline(baseline: Any) -> str:
-    metrics = _attr(baseline, "coverage_metrics", "coverageMetrics", default={}) or {}
-    machine = _attr(baseline, "machine_fact_metrics", "machineFactMetrics", default={}) or {}
-    usable = _attr(metrics, "usable_window_ratio", "usableWindowRatio", default=0)
-    large_paste = _attr(machine, "large_paste_count", "largePasteCount", default=0)
-    lines = [
-        "STATISTICAL_BASELINE:",
-        f"  usableWindowRatio={float(usable):.3f}",
-        f"  largePasteCount={large_paste}",
-    ]
+    if hasattr(baseline, "model_dump"):
+        raw = baseline.model_dump(by_alias=True)
+    elif isinstance(baseline, Mapping):
+        raw = dict(baseline)
+    else:
+        raw = vars(baseline)
+    lines = ["STATISTICAL_BASELINE:"]
+    for section_name, section in raw.items():
+        if not isinstance(section, Mapping):
+            continue
+        for metric, value in section.items():
+            if metric in KNOWN_BASELINE_METRICS and value is not None:
+                lines.append(f"  {metric}={json.dumps(value, default=str)}")
+    if len(lines) == 1:
+        lines.append("  (none)")
     return "\n".join(lines)
 
 
@@ -189,59 +241,165 @@ def _build_citation_inventory(machine_facts_bundle: Any, perception_bundle: Any)
     facts = getattr(machine_facts_bundle, "facts", []) or []
     kinds = sorted({_fact_kind(f) for f in facts if _fact_kind(f)})
     observations = getattr(perception_bundle, "observations", []) or []
-    window_ids = sorted(
-        {
-            _attr(o, "window_id", "windowId")
-            for o in observations
-            if _attr(o, "window_id", "windowId")
-        }
-    )
-    return "\n".join(
+    lines = [
+        "=== CITATION INVENTORY ===",
+        "MACHINE_FACT_KINDS (copy a kind verbatim into machineFactsCited):",
+        "  " + (", ".join(kinds) if kinds else "(none)"),
+        'OBSERVATION CITATIONS (copy verbatim as "windowId.fieldPath=value"):',
+    ]
+    citation_count = 0
+    for observation in observations:
+        if citation_count >= TRACK2_CAPS["events"]:
+            break
+        raw = (
+            observation.model_dump(by_alias=True)
+            if hasattr(observation, "model_dump")
+            else dict(observation)
+            if isinstance(observation, Mapping)
+            else {}
+        )
+        window_id = str(raw.get("windowId") or raw.get("window_id") or "")
+        if not window_id:
+            continue
+        for path in FIELD_PATH_RESOLVERS:
+            node: Any = raw
+            for segment in path.split("."):
+                if not isinstance(node, Mapping) or segment not in node:
+                    node = None
+                    break
+                node = node[segment]
+            if node is None or str(node).upper() == "UNKNOWN":
+                continue
+            lines.append(f"  {window_id}.{path}={str(node).lower() if isinstance(node, bool) else node}")
+            citation_count += 1
+            if citation_count >= TRACK2_CAPS["events"]:
+                break
+        audio = raw.get("audio")
+        if isinstance(audio, Mapping) and audio.get("conversationSummaryEn"):
+            lines.append(
+                f"  {window_id}.audio.conversationSummaryEn={audio['conversationSummaryEn']}"
+            )
+    if citation_count == 0:
+        lines.append("  (none)")
+    lines.extend(
         [
-            "=== CITATION INVENTORY ===",
-            "MACHINE_FACT_KINDS:",
-            "  " + (", ".join(kinds) if kinds else "(none)"),
-            "OBSERVATION_WINDOW_IDs:",
-            "  " + (", ".join(window_ids[:20]) if window_ids else "(none)"),
+            "VALID_FIELD_PATHS:",
+            "  " + ", ".join(FIELD_PATH_RESOLVERS),
+            "UNKNOWN values are not citable.",
         ]
     )
+    return "\n".join(lines)
+
+
+def _serialize_perception_observations(perception_bundle: Any) -> str:
+    observations = getattr(perception_bundle, "observations", []) or []
+    lines = ["PERCEPTION_OBSERVATIONS:"]
+    for observation in observations[: TRACK2_CAPS["events"]]:
+        raw = (
+            observation.model_dump(by_alias=True)
+            if hasattr(observation, "model_dump")
+            else dict(observation)
+            if isinstance(observation, Mapping)
+            else {}
+        )
+        window_id = raw.get("windowId") or raw.get("window_id")
+        values: list[str] = []
+        for path in FIELD_PATH_RESOLVERS:
+            node: Any = raw
+            for segment in path.split("."):
+                if not isinstance(node, Mapping) or segment not in node:
+                    node = None
+                    break
+                node = node[segment]
+            if node is not None and str(node).upper() != "UNKNOWN":
+                values.append(f"{path}={node}")
+        if values:
+            lines.append(
+                f"  - {window_id} [{raw.get('startMs', 0)},{raw.get('endMs', 0)}]: "
+                + "; ".join(values)
+            )
+        audio = raw.get("audio")
+        if isinstance(audio, Mapping) and audio.get("conversationSummaryEn"):
+            lines.append(f"    conversationSummaryEn={audio['conversationSummaryEn']}")
+    if len(lines) == 1:
+        lines.append("  (none)")
+    return "\n".join(lines)
 
 
 def _parse_raw_signals(raw: dict[str, Any]) -> tuple[list[RawEpisodeAnalysis], list[RawCandidateSignal]]:
+    def pick(item: Mapping[str, Any], camel: str, snake: str, default: Any = None) -> Any:
+        value = item.get(camel)
+        return item.get(snake, default) if value is None else value
+
     episodes: list[RawEpisodeAnalysis] = []
-    for item in raw.get("episodeAnalysis") or []:
+    for item in raw.get("episodeAnalysis") or raw.get("episode_analysis") or []:
         if not isinstance(item, dict):
             continue
         episodes.append(
             RawEpisodeAnalysis(
-                episode_id=str(item.get("episodeId", "unknown")),
-                time_range=str(item.get("timeRange", "")),
-                window_ids=[str(v) for v in item.get("windowIds") or []],
-                machine_facts_in_range=[str(v) for v in item.get("machineFactsInRange") or []],
-                episode_summary=str(item.get("episodeSummary", "")),
-                suspicious_behavior_type=str(item.get("suspiciousBehaviorType", "none")),
-                will_emit_signal=item.get("willEmitSignal") is True,
-                reason_not_signalled=item.get("reasonNotSignalled"),
+                episode_id=str(pick(item, "episodeId", "episode_id", "unknown")),
+                time_range=str(pick(item, "timeRange", "time_range", "")),
+                window_ids=[str(v) for v in pick(item, "windowIds", "window_ids", []) or []],
+                machine_facts_in_range=[
+                    str(v)
+                    for v in pick(
+                        item, "machineFactsInRange", "machine_facts_in_range", []
+                    )
+                    or []
+                ],
+                episode_summary=str(pick(item, "episodeSummary", "episode_summary", "")),
+                suspicious_behavior_type=str(
+                    pick(item, "suspiciousBehaviorType", "suspicious_behavior_type", "none")
+                ),
+                will_emit_signal=pick(item, "willEmitSignal", "will_emit_signal", False)
+                is True,
+                reason_not_signalled=pick(
+                    item, "reasonNotSignalled", "reason_not_signalled"
+                ),
             )
         )
     signals: list[RawCandidateSignal] = []
-    for item in raw.get("candidateSignals") or []:
+    for item in raw.get("candidateSignals") or raw.get("candidate_signals") or []:
         if not isinstance(item, dict):
             continue
         signals.append(
             RawCandidateSignal(
-                signal_type=str(item.get("signalType", "")),
-                episode_ref=str(item.get("episodeRef")) if item.get("episodeRef") else None,
+                signal_type=str(pick(item, "signalType", "signal_type", "")),
+                episode_ref=(
+                    str(pick(item, "episodeRef", "episode_ref"))
+                    if pick(item, "episodeRef", "episode_ref")
+                    else None
+                ),
                 hypothesis_honest=item.get("hypothesis_honest") or {"supporting": [], "contradicting": []},
                 hypothesis_assisted=item.get("hypothesis_assisted") or {"supporting": [], "contradicting": []},
                 resolution=str(item.get("resolution", "ambiguous")),
                 confidence=_parse_confidence(item.get("confidence", 0.5)),
-                innocent_explanation_considered=item.get("innocentExplanationConsidered") is True,
-                why_rejected=str(item.get("whyRejected", "")),
-                machine_facts_cited=[str(v) for v in item.get("machineFactsCited") or []],
-                observations_cited=[str(v) for v in item.get("observationsCited") or []],
-                baseline_metrics_cited=[str(v) for v in item.get("baselineMetricsCited") or []],
-                integrity_story=item.get("integrityStory"),
+                innocent_explanation_considered=pick(
+                    item,
+                    "innocentExplanationConsidered",
+                    "innocent_explanation_considered",
+                    False,
+                )
+                is True,
+                why_rejected=str(pick(item, "whyRejected", "why_rejected", "")),
+                machine_facts_cited=[
+                    str(v)
+                    for v in pick(item, "machineFactsCited", "machine_facts_cited", [])
+                    or []
+                ],
+                observations_cited=[
+                    str(v)
+                    for v in pick(item, "observationsCited", "observations_cited", [])
+                    or []
+                ],
+                baseline_metrics_cited=[
+                    str(v)
+                    for v in pick(
+                        item, "baselineMetricsCited", "baseline_metrics_cited", []
+                    )
+                    or []
+                ],
+                integrity_story=pick(item, "integrityStory", "integrity_story"),
             )
         )
     return episodes, signals
@@ -262,7 +420,7 @@ def build_deliberation_prompt(input_data: DeliberationInput) -> str:
         ),
         episode_inventory_text=serialize_episode_inventory(episode_inventory),
         machine_facts=_serialize_machine_facts(input_data.machine_facts_bundle),
-        perception_obs="PERCEPTION: see citation inventory",
+        perception_obs=_serialize_perception_observations(input_data.perception_bundle),
         baseline_stats=_serialize_baseline(input_data.statistical_baseline),
         correlated_signals_text=_serialize_correlated_signals(
             input_data.correlated_signals
@@ -479,8 +637,6 @@ def build_deliberation_bundle(
             )
         )
 
-    active = active_validated_signals(validated)
-    category = derive_category(active)
     informative_ratio, _, _ = compute_informative_content_ratio(input_data.perception_bundle)
     usable_ratio = float(
         _attr(
@@ -491,18 +647,18 @@ def build_deliberation_bundle(
         )
         or 1.0
     )
-    needs_informative_cap = any(
-        "visual_observation" in s.source_types or "audio_observation" in s.source_types
-        for s in active
+    unified = compute_unified_score(
+        validated,
+        input_data.video_findings or [],
+        usable_window_ratio=usable_ratio,
+        informative_content_ratio=informative_ratio,
     )
-    final_confidence, capture_cap, informative_cap = apply_confidence_caps(
-        derive_confidence(active),
-        usable_ratio,
-        informative_ratio,
-        apply_informative_cap=bool(needs_informative_cap),
-    )
+    category = unified.category
+    final_confidence = unified.confidence
+    capture_cap = unified.capture_quality_cap_applied
+    informative_cap = unified.informative_content_cap_applied
 
-    raw_category = str(raw.get("category", "REVIEW_REQUIRED"))
+    raw_category = _pick_raw_text(raw, "category", "category", "REVIEW_REQUIRED")
     downgraded = raw_category == "STRONG_EVIDENCE" and category != "STRONG_EVIDENCE"
 
     episode_entries = [
@@ -512,16 +668,29 @@ def build_deliberation_bundle(
         )
     ]
 
+    behavior_summary = _pick_raw_text(raw, "behaviorSummary", "behavior_summary")
+    recommendation_text = _pick_raw_text(raw, "recommendation", "recommendation")
+    reasoning = _pick_raw_text(raw, "reasoning", "reasoning")
+    if category != "CLEAR":
+        if _looks_like_clear_prose(behavior_summary):
+            behavior_summary = ""
+        if _looks_like_clear_prose(reasoning):
+            reasoning = "Independent evidence findings require human review."
+        if _looks_like_clear_prose(recommendation_text):
+            recommendation_text = (
+                "Review recommended — an independently derived finding warrants human judgment."
+            )
+
     recommendation = DeliberationRecommendation(
-        behavior_summary=str(raw.get("behaviorSummary", "")),
-        recommendation=str(raw.get("recommendation", "")),
+        behavior_summary=behavior_summary,
+        recommendation=recommendation_text,
         category=category,
         confidence=final_confidence,
-        reasoning=str(raw.get("reasoning", "")),
-        key_reasons=[str(r) for r in (raw.get("keyReasons") or [])][:8],
-        independent_sources_count=len({t for s in active for t in s.source_types}),
-        independent_source_types=list({t for s in active for t in s.source_types}),
-        supporting_signals=[s.signal_id for s in active],
+        reasoning=reasoning,
+        key_reasons=_pick_raw_list(raw, "keyReasons", "key_reasons")[:8],
+        independent_sources_count=len(unified.independent_source_types),
+        independent_source_types=unified.independent_source_types,
+        supporting_signals=unified.supporting_signal_ids,
     )
 
     return DeliberationBundle(

@@ -463,7 +463,8 @@ def build_episode_analysis_entries(
     entries: list[dict[str, Any]] = []
     for episode in episodes:
         adjudicated = adjudicated_by_id.get(episode.episode_id)
-        will_emit = adjudicated.will_emit_signal if adjudicated else False
+        emitted_ids = list(emitted_signal_ids_by_episode.get(episode.episode_id, []))
+        will_emit = bool(emitted_ids)
         entries.append(
             {
                 "episodeId": episode.episode_id,
@@ -483,11 +484,13 @@ def build_episode_analysis_entries(
                     if will_emit
                     else (
                         adjudicated.reason_not_signalled
+                        if adjudicated and not adjudicated.will_emit_signal
+                        else "candidate signal did not pass deterministic validation"
                         if adjudicated
                         else "not adjudicated by model"
                     )
                 ),
-                "emittedSignalIds": list(emitted_signal_ids_by_episode.get(episode.episode_id, [])),
+                "emittedSignalIds": emitted_ids,
             }
         )
     return entries

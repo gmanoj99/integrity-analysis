@@ -30,9 +30,7 @@ class ClipRef(ContractModel):
     segments: list[ClipSegment] = Field(default_factory=list)
     clip_start_ms: int = Field(ge=0)
     clip_end_ms: int = Field(ge=0)
-    duration_ms: int = Field(ge=0)
     cache_key: str
-    seek_to_ms: int | None = Field(default=None, ge=0)
     midpoint_fallback: bool = False
 
 
@@ -70,9 +68,7 @@ class EvidenceSourceEntry(ContractModel):
 
 
 class ConfidenceSection(ContractModel):
-    final_confidence: float = Field(ge=0, le=1)
     capture_quality_cap_applied: bool = False
-    corroboration_downgrade_applied: bool = False
     usable_window_ratio: float = Field(ge=0, le=1)
     covered_windows: int = Field(ge=0)
     total_windows: int = Field(ge=0)
@@ -120,8 +116,6 @@ class RejectedSignalEntry(ContractModel):
 
 class DetectedSignalsSection(ContractModel):
     signals: list[DetectedSignalEntry] = Field(default_factory=list)
-    total_validated: int = 0
-    total_rejected: int = 0
     rejected_signals: list[RejectedSignalEntry] = Field(default_factory=list)
 
 
@@ -179,7 +173,6 @@ class CorrelatedPatternsSection(ContractModel):
 
 class EpisodeAnalysisSection(ContractModel):
     episodes: list[EpisodeAnalysisEntry] = Field(default_factory=list)
-    total_episodes: int = 0
     emitted_count: int = 0
 
 
@@ -204,7 +197,6 @@ class TimelineEntry(ContractModel):
 
 class EvidenceTimelineSection(ContractModel):
     entries: list[TimelineEntry] = Field(default_factory=list)
-    total_entries: int = 0
 
 
 class UnknownInterval(ContractModel):
@@ -236,12 +228,10 @@ class SmartStudentNotesSection(ContractModel):
 class ContextualSpeechEvent(ContractModel):
     event_type: str
     timestamp_window_ms: tuple[int, int]
-    one_line_why: str
     clip_start_ms: int
     clip_end_ms: int
     speech_language: str | None = None
     code_mixing: bool | None = None
-    speech_content_class: str | None = None
     conversation_summary_en: str | None = None
     notable_phrases_original: list[str] | None = None
 
@@ -282,7 +272,6 @@ class IntegrityStoryEntry(ContractModel):
 
 class IntegrityStoriesSection(ContractModel):
     stories: list[IntegrityStoryEntry] = Field(default_factory=list)
-    total_stories: int = 0
 
 
 class ReviewerActionSection(ContractModel):
@@ -307,7 +296,6 @@ class ProvenanceSection(ContractModel):
     clip_cache_version: str = "offset-only-v1"
     model_versions: dict[str, str] = Field(default_factory=dict)
     composite_hash: str
-    deliberation_composite_hash: str
 
 
 class EvidenceBundle(ContractModel):

@@ -11,6 +11,10 @@ from integrity_review_pipeline.contracts.deliberation import (
     IntegrityStoryProofAnchors,
     ValidatedSignal,
 )
+from integrity_review_pipeline.evidence_bundle.section_builders import (
+    build_behavior_summary,
+    build_recommendation_section,
+)
 from integrity_review_pipeline.evidence_bundle.service import (
     EvidenceBundleInput,
     assemble_evidence_bundle,
@@ -127,6 +131,15 @@ def test_assemble_evidence_bundle_omits_question_and_performance_sections() -> N
     assert "questionInsights" not in dumped
     assert "performanceEvidence" not in dumped
     assert len(dumped["mediaIndex"]) == 1
+    assert "finalConfidence" not in dumped["confidence"]
+    assert "corroborationDowngradeApplied" not in dumped["confidence"]
+    assert "totalValidated" not in dumped["detectedSignals"]
+    assert "totalStories" not in dumped["integrityStories"]
+    assert "totalEpisodes" not in dumped["episodeAnalysis"]
+    assert "totalEntries" not in dumped["evidenceTimeline"]
+    assert "deliberationCompositeHash" not in dumped["provenance"]
+    assert "durationMs" not in dumped["trackBObservations"][0]["clipRef"]
+    assert "seekToMs" not in dumped["trackBObservations"][0]["clipRef"]
 
 
 def test_build_media_index_skips_rrweb() -> None:
@@ -153,3 +166,35 @@ def test_build_media_index_skips_rrweb() -> None:
     index = build_media_index(timeline)
     assert len(index) == 1
     assert index[0].evidence_type == "screen"
+
+
+def test_behavior_summary_survives_track_b_only_review() -> None:
+    deliberation = DeliberationBundle(
+        candidate_id="c1",
+        assessment_id="a1",
+        produced_at="2026-01-01T00:00:00Z",
+        model_version="test",
+        prompt_version="scope4-v13",
+        provenance=DeliberationProvenance(
+            deliberation_prompt_version="scope4-v13",
+            perception_version_hash="p1",
+            baseline_version_hash="b1",
+            composite_version_hash="d1",
+        ),
+        validated_signals=[],
+        recommendation=DeliberationRecommendation(
+            behavior_summary="No significant integrity concerns were identified.",
+            recommendation="No action required.",
+            category="REVIEW_REQUIRED",
+            confidence=0.8,
+            reasoning="No integrity concerns were identified.",
+            supporting_signals=["tb-phone"],
+        ),
+    )
+    summary = build_behavior_summary(deliberation)
+    assert "Independent evidence findings" in summary.text
+    section = build_recommendation_section(deliberation)
+    assert section.category == "REVIEW_REQUIRED"
+    assert "No action required" not in section.recommendation
+    assert section.supporting_signal_ids == ["tb-phone"]
+

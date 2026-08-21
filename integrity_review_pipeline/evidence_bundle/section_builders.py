@@ -79,12 +79,23 @@ def active_signals(bundle: DeliberationBundle) -> list[ValidatedSignal]:
     return [s for s in bundle.validated_signals if s.resolution != "honest"]
 
 
+def _looks_like_clear_prose(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "no significant integrity",
+            "no integrity concerns",
+            "no concerns were identified",
+            "adequate explanations",
+            "no action required",
+        )
+    )
+
+
 def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection:
     active = active_signals(bundle)
-    if not active:
-        verbatim = (bundle.recommendation.behavior_summary or "").strip()
-        if verbatim:
-            return BehaviorSummarySection(text=verbatim)
+    if bundle.recommendation.category == "CLEAR":
         rejected = bundle.rejected_signal_count
         suffix = "s" if rejected != 1 else ""
         return BehaviorSummarySection(
@@ -94,8 +105,18 @@ def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection
             )
         )
     verbatim = (bundle.recommendation.behavior_summary or "").strip()
-    if verbatim:
+    if verbatim and active and not _looks_like_clear_prose(verbatim):
         return BehaviorSummarySection(text=verbatim)
+    if not active:
+        reasoning = (bundle.recommendation.reasoning or "").strip()
+        if reasoning and not _looks_like_clear_prose(reasoning):
+            return BehaviorSummarySection(text=reasoning[:500])
+        rec = (bundle.recommendation.recommendation or "").strip()
+        if rec and not _looks_like_clear_prose(rec):
+            return BehaviorSummarySection(text=rec[:500])
+        return BehaviorSummarySection(
+            text="Independent evidence findings require human review."
+        )
     story = active[0].integrity_story
     if story and story.what_happened:
         return BehaviorSummarySection(
@@ -115,8 +136,8 @@ def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection
 
 def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSection:
     active = active_signals(bundle)
-    source_types = sorted({t for s in active for t in s.source_types})
-    if not active:
+    source_types = list(bundle.recommendation.independent_source_types)
+    if bundle.recommendation.category == "CLEAR":
         rejected = bundle.rejected_signal_count
         suffix = "s" if rejected != 1 else ""
         return RecommendationSection(
@@ -132,6 +153,25 @@ def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSe
             independent_source_types=[],
             corroboration_downgrade_applied=bundle.corroboration_downgrade_applied,
             supporting_signal_ids=[],
+        )
+    if not active:
+        reasoning = (bundle.recommendation.reasoning or "").strip()
+        if not reasoning or _looks_like_clear_prose(reasoning):
+            reasoning = "Independent evidence findings require human review."
+        recommendation_text = (bundle.recommendation.recommendation or "").strip()
+        if not recommendation_text or _looks_like_clear_prose(recommendation_text):
+            recommendation_text = (
+                "Review recommended — an independently derived finding warrants human judgment."
+            )
+        return RecommendationSection(
+            category=bundle.recommendation.category,
+            confidence=bundle.recommendation.confidence,
+            reasoning=reasoning,
+            recommendation=recommendation_text,
+            independent_source_count=len(source_types),
+            independent_source_types=[str(t) for t in source_types],
+            corroboration_downgrade_applied=bundle.corroboration_downgrade_applied,
+            supporting_signal_ids=bundle.recommendation.supporting_signals,
         )
     labels = ", ".join(sorted({humanize_signal_type(s.signal_type) for s in active}))
     story = active[0].integrity_story
@@ -432,7 +472,7 @@ def build_integrity_stories(
                 ),
             )
         )
-    return IntegrityStoriesSection(stories=stories, total_stories=len(stories))
+    return IntegrityStoriesSection(stories=stories)
 
 
 def build_timeline_entries(
@@ -641,41 +681,6 @@ def build_smart_student_notes(
                 source="baseline_within_normal",
             )
         )
-    notes.extend(
-        [
-            SmartStudentNote(
-                behavior="Looking down while solving",
-                explanation=(
-                    "Looking down at a keyboard or notepad during problem-solving is normal exam behaviour."
-                ),
-                source="policy_note",
-            ),
-            SmartStudentNote(
-                behavior="High performance is not itself evidence",
-                explanation=(
-                    "Only behavioural observations are used as evidence. Score or pass-rate data "
-                    "provides context for reviewers but is not treated as a cheating indicator."
-                ),
-                source="policy_note",
-            ),
-            SmartStudentNote(
-                behavior="Natural posture variation",
-                explanation=(
-                    "Leaning forward, shifting in seat, and normal body movement during a long "
-                    "session are expected and not considered anomalies."
-                ),
-                source="policy_note",
-            ),
-            SmartStudentNote(
-                behavior="Typing speed variation within observed range",
-                explanation=(
-                    "Isolated fast or slow typing bursts that remain within the candidate's own "
-                    "observed range are not considered suspicious."
-                ),
-                source="policy_note",
-            ),
-        ]
-    )
     return SmartStudentNotesSection(notes=notes)
 
 
@@ -696,9 +701,6 @@ def build_contextual_events_section(
                         default=(0, 0),
                     )
                 ),  # type: ignore[arg-type]
-                one_line_why=str(
-                    attr(event, "one_line_why", "oneLineWhy", default="")
-                ),
                 clip_start_ms=int(
                     attr(event, "clip_start_ms", "clipStartMs", default=0) or 0
                 ),
@@ -707,9 +709,6 @@ def build_contextual_events_section(
                 ),
                 speech_language=attr(proof, "speech_language", "speechLanguage"),
                 code_mixing=attr(proof, "code_mixing", "codeMixing"),
-                speech_content_class=attr(
-                    proof, "speech_content_class", "speechContentClass"
-                ),
                 conversation_summary_en=attr(
                     proof, "conversation_summary_en", "conversationSummaryEn"
                 ),

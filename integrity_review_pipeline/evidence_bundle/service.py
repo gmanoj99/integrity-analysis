@@ -26,13 +26,13 @@ from ..contracts.evidence_bundle import (
 )
 from ..duck_helpers import attr
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
-from ..scoring.merge_analysis import reconcile_findings
 from .clips import (
     EVIDENCE_BUNDLE_LOGIC_VERSION,
     build_media_index,
     compute_evidence_bundle_version_hash,
     resolve_offset_clip_ref,
 )
+from ..scoring.unified_score import GAZE_OBSERVATION_DISPLAY_FLOOR_MS
 from .section_builders import (
     active_signals,
     build_behavior_summary,
@@ -46,9 +46,6 @@ from .section_builders import (
     signal_time_span,
     to_reviewer_prose,
 )
-
-GAZE_OBSERVATION_DISPLAY_FLOOR_MS = 15_000
-TRACK_B_OBSERVATION_TYPES = frozenset({"phone_usage", "suspicious_eye_movement"})
 
 
 @dataclass(slots=True)
@@ -77,7 +74,7 @@ def build_curated_track_b_observations(
     for finding in track_b_findings:
         event_type = str(attr(finding, "event_type", "eventType", default=""))
         verdict = attr(finding, "verdict", default="flagged")
-        if verdict != "flagged" or event_type not in TRACK_B_OBSERVATION_TYPES:
+        if verdict != "flagged" or event_type == "ok":
             continue
         window = attr(finding, "timestamp_window_ms", "timestampWindowMs", default=(0, 0))
         t0, t1 = int(window[0]), int(window[1])
@@ -95,11 +92,11 @@ def build_curated_track_b_observations(
             ),
             None,
         )
-        title = (
-            f"Phone usage (candidate) · {round(duration_ms / 1000)}s"
-            if event_type == "phone_usage"
-            else f"Sustained gaze · {round(duration_ms / 1000)}s"
-        )
+        title = {
+            "phone_usage": "Phone usage (candidate)",
+            "suspicious_eye_movement": "Sustained gaze",
+        }.get(event_type, event_type.replace("_", " ").strip().capitalize())
+        title = f"{title} · {round(duration_ms / 1000)}s"
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{event_type}_{t0}_{t1}",
@@ -124,6 +121,7 @@ def _build_confidence_section(
     deliberation_bundle: DeliberationBundle,
     perception_bundle: Any,
     statistical_baseline: Any,
+    machine_facts_bundle: Any,
     master_timeline: Any,
 ) -> ConfidenceSection:
     active = active_signals(deliberation_bundle)
@@ -146,9 +144,9 @@ def _build_confidence_section(
             attr(statistical_baseline, "coverage_metrics", "coverageMetrics"),
             "usable_window_ratio",
             "usableWindowRatio",
-            default=0.0,
+            default=1.0,
         )
-        or 0.0
+        or 1.0
     )
     screen_spans = attr(master_timeline, "screen_chunk_spans", "screenChunkSpans", default=[]) or []
     screen_analysed_ms = sum(
@@ -166,9 +164,7 @@ def _build_confidence_section(
         else:
             screen_coverage_label = f"screen recording present ({len(screen_spans)} chunks)"
     return ConfidenceSection(
-        final_confidence=deliberation_bundle.recommendation.confidence,
         capture_quality_cap_applied=deliberation_bundle.capture_quality_cap_applied,
-        corroboration_downgrade_applied=deliberation_bundle.corroboration_downgrade_applied,
         usable_window_ratio=usable_ratio,
         covered_windows=covered,
         total_windows=total,
@@ -182,7 +178,12 @@ def _build_confidence_section(
             if covered == 0
             else f"{round((covered / max(1, total)) * 100)}% video ({covered}/{total} windows)"
         ),
-        keystroke_coverage_label="keystroke telemetry available",
+        keystroke_coverage_label=(
+            "keystroke telemetry available"
+            if str(attr(machine_facts_bundle, "exam_mode", "examMode", default="none"))
+            == "rrweb"
+            else None
+        ),
         screen_coverage_label=screen_coverage_label,
     )
 
@@ -224,8 +225,6 @@ def _build_detected_signals(
         )
     return DetectedSignalsSection(
         signals=signals,
-        total_validated=len(signals),
-        total_rejected=bundle.rejected_signal_count,
         rejected_signals=[
             RejectedSignalEntry(
                 signal_type=item.signal_type,
@@ -301,8 +300,6 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         covered_windows=covered_windows,
     )
     correlated_patterns = _build_correlated_patterns(input_data.correlated_signals)
-    reconcile_findings([], track_b_findings)
-
     return EvidenceBundle(
         candidate_id=input_data.candidate_id,
         assessment_id=input_data.assessment_id,
@@ -313,6 +310,7 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             deliberation_bundle=bundle,
             perception_bundle=input_data.perception_bundle,
             statistical_baseline=input_data.statistical_baseline,
+            machine_facts_bundle=input_data.machine_facts_bundle,
             master_timeline=input_data.master_timeline,
         ),
         key_reasons=build_key_reasons(bundle),
@@ -326,13 +324,9 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         correlated_patterns=correlated_patterns,
         episode_analysis=EpisodeAnalysisSection(
             episodes=bundle.episode_analysis,
-            total_episodes=bundle.episode_inventory_count or len(bundle.episode_analysis),
             emitted_count=sum(1 for e in bundle.episode_analysis if e.will_emit_signal),
         ),
-        evidence_timeline=EvidenceTimelineSection(
-            entries=timeline_entries,
-            total_entries=len(timeline_entries),
-        ),
+        evidence_timeline=EvidenceTimelineSection(entries=timeline_entries),
         unknown_panel=build_unknown_panel(
             input_data.perception_bundle,
             input_data.master_timeline,
@@ -357,7 +351,6 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             clip_cache_version="offset-only-v1",
             model_versions={"deliberationModel": bundle.model_version},
             composite_hash=composite_hash,
-            deliberation_composite_hash=bundle.provenance.composite_version_hash,
         ),
         media_index=media_index,
     )

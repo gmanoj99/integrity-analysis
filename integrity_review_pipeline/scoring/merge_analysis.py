@@ -185,6 +185,8 @@ def _compute_finding_weight(finding: MergedFinding) -> float:
         return 1.0
     if finding.corroboration_status == "corroborated" and finding.merged_verdict == "ai_detected":
         return 0.6
+    if finding.corroboration_status == "track_b_only" and finding.merged_verdict == "confirmed":
+        return 1.0
     if finding.corroboration_status == "track_b_only" and finding.merged_verdict == "ai_detected":
         return 0.85
     return 0.0

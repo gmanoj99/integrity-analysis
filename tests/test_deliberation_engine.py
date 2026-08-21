@@ -4,7 +4,11 @@ import json
 
 from types import SimpleNamespace
 
-from integrity_review_pipeline.deliberation.engine import DeliberationInput, build_deliberation_bundle
+from integrity_review_pipeline.deliberation.engine import (
+    DeliberationInput,
+    _parse_raw_signals,
+    build_deliberation_bundle,
+)
 from integrity_review_pipeline.deliberation.episodes import build_episode_inventory
 
 
@@ -27,6 +31,31 @@ def test_build_episode_inventory_from_machine_fact_seed() -> None:
     assert len(episodes) == 1
     assert episodes[0].episode_id == "ep1"
     assert episodes[0].machine_fact_kinds == ["LARGE_PASTE"]
+
+
+def test_parse_raw_signals_accepts_snake_case_keys() -> None:
+    episodes, signals = _parse_raw_signals(
+        {
+            "episode_analysis": [
+                {
+                    "episode_id": "ep1",
+                    "time_range": "0-20s",
+                    "will_emit_signal": True,
+                }
+            ],
+            "candidate_signals": [
+                {
+                    "signal_type": "possible_external_consultation",
+                    "episode_ref": "ep1",
+                    "machine_facts_cited": ["LARGE_PASTE"],
+                    "observations_cited": [],
+                    "baseline_metrics_cited": [],
+                }
+            ],
+        }
+    )
+    assert episodes[0].episode_id == "ep1"
+    assert signals[0].signal_type == "possible_external_consultation"
 
 
 def test_build_deliberation_bundle_validates_signals_from_raw_json() -> None:
@@ -171,3 +200,19 @@ def test_build_deliberation_bundle_accepts_string_confidence() -> None:
     )
     assert len(bundle.validated_signals) == 1
     assert bundle.validated_signals[0].confidence == 0.5
+
+
+def test_parse_integrity_story_accepts_list_proof_anchors() -> None:
+    from integrity_review_pipeline.deliberation.rules import parse_integrity_story
+
+    story = parse_integrity_story(
+        {
+            "headline": "Phone in hand",
+            "whatHappened": "Candidate held a phone during the exam.",
+            "proofAnchors": ["w_0_20000", "w_20000_40000"],
+        }
+    )
+    assert story is not None
+    assert story.proof_anchors.window_ids == ["w_0_20000", "w_20000_40000"]
+    assert parse_integrity_story(["not", "a", "story"]) is None
+
