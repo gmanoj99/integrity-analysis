@@ -1,8 +1,8 @@
 """Non-secret environment configuration for the isolated ECS worker stack.
 
 Values live in a JSON file per environment (see
-``infra/aws/config/ecs-test.example.json`` and ``infra/aws/config/beta.json``);
-secrets such as the Gemini API key are never read from this file.
+``infra/aws/config/beta.json``); secrets such as the Gemini API key are
+never read from this file.
 """
 
 from __future__ import annotations

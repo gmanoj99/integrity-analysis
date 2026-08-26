@@ -74,6 +74,44 @@ def _metadata(log: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _sections_from_spec(
+    section_details: list[SectionInput], t0: int, anchors: list[ActivityAnchor]
+) -> list[SessionSection]:
+    """Build sections straight from the backend's ``sections[]`` datetimes.
+
+    The backend does not always emit ``SECTION_STARTED``/``SECTION_*`` anchors in
+    the activity log, so this is the primary source when it is available.
+    """
+
+    dated = [detail for detail in section_details if detail.start_datetime]
+    if not dated:
+        return []
+    ordered = sorted(dated, key=lambda item: item.order if item.order is not None else 0)
+    last_anchor_offset = anchors[-1].session_offset_ms if anchors else 0
+
+    sections: list[SessionSection] = []
+    for index, detail in enumerate(ordered):
+        start_ms = max(0, parse_activity_epoch_ms(detail.start_datetime) - t0)
+        if detail.end_datetime:
+            end_ms = max(start_ms, parse_activity_epoch_ms(detail.end_datetime) - t0)
+        elif index + 1 < len(ordered) and ordered[index + 1].start_datetime:
+            end_ms = max(start_ms, parse_activity_epoch_ms(ordered[index + 1].start_datetime) - t0)
+        else:
+            end_ms = max(start_ms, last_anchor_offset)
+        sections.append(
+            SessionSection(
+                section_id=detail.section_id,
+                label=detail.title or detail.section_type or detail.section_id,
+                section_type=detail.section_type,
+                exam_attempt_id=detail.exam_attempt_id,
+                exam_id=detail.exam_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
+    return sections
+
+
 def build_canonical_timeline(
     activity_logs: list[dict[str, Any]], section_details: list[SectionInput]
 ) -> CanonicalTimeline:
@@ -92,7 +130,14 @@ def build_canonical_timeline(
 
     def event_type(log: dict[str, Any]) -> str:
         return str(
-            _value(log, "activity_type_enum", "activityTypeEnum", "eventType", "type")
+            _value(
+                log,
+                "activity_type_enum",
+                "activityTypeEnum",
+                "activity_type",
+                "eventType",
+                "type",
+            )
         )
 
     def epoch(log: dict[str, Any]) -> int:
@@ -131,44 +176,45 @@ def build_canonical_timeline(
             )
         )
 
-    starts = [
-        anchor
-        for anchor in anchors
-        if anchor.type == "SECTION_STARTED" and anchor.section_id
-    ]
-    ends = [
-        anchor
-        for anchor in anchors
-        if anchor.type in SECTION_END_TYPES and anchor.section_id
-    ]
-    sections: list[SessionSection] = []
-    for index, section_start in enumerate(starts):
-        closing = next(
-            (
-                item
-                for item in ends
-                if item.section_id == section_start.section_id
-                and item.epoch_ms >= section_start.epoch_ms
-            ),
-            None,
-        )
-        detail = section_details[index] if index < len(section_details) else None
-        end_ms = (
-            closing.session_offset_ms
-            if closing is not None
-            else section_start.session_offset_ms
-        )
-        sections.append(
-            SessionSection(
-                section_id=section_start.section_id or f"section-{index + 1}",
-                label=(detail.title if detail and detail.title else f"Section {index + 1}"),
-                section_type=detail.section_type if detail else None,
-                exam_attempt_id=detail.exam_attempt_id if detail else None,
-                exam_id=detail.exam_id if detail else None,
-                start_ms=section_start.session_offset_ms,
-                end_ms=end_ms,
+    sections = _sections_from_spec(section_details, t0, anchors)
+    if not sections:
+        starts = [
+            anchor
+            for anchor in anchors
+            if anchor.type == "SECTION_STARTED" and anchor.section_id
+        ]
+        ends = [
+            anchor
+            for anchor in anchors
+            if anchor.type in SECTION_END_TYPES and anchor.section_id
+        ]
+        for index, section_start in enumerate(starts):
+            closing = next(
+                (
+                    item
+                    for item in ends
+                    if item.section_id == section_start.section_id
+                    and item.epoch_ms >= section_start.epoch_ms
+                ),
+                None,
             )
-        )
+            detail = section_details[index] if index < len(section_details) else None
+            end_ms = (
+                closing.session_offset_ms
+                if closing is not None
+                else section_start.session_offset_ms
+            )
+            sections.append(
+                SessionSection(
+                    section_id=section_start.section_id or f"section-{index + 1}",
+                    label=(detail.title if detail and detail.title else f"Section {index + 1}"),
+                    section_type=detail.section_type if detail else None,
+                    exam_attempt_id=detail.exam_attempt_id if detail else None,
+                    exam_id=detail.exam_id if detail else None,
+                    start_ms=section_start.session_offset_ms,
+                    end_ms=end_ms,
+                )
+            )
 
     completion = next(
         (anchor for anchor in anchors if anchor.type == "ALL_SECTIONS_COMPLETED"),

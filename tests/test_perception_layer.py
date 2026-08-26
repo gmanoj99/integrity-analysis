@@ -167,6 +167,7 @@ def make_deps(gemini: RecordingGemini | None = None) -> PipelineDeps:
         limiter=NoopLimiter(),
         logger=NoopLogger(),
         media_uri_provider=DummyMediaUriProvider(),
+        organization_id="test-org",
     )
 
 

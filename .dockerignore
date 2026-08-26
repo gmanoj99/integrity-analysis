@@ -1,0 +1,40 @@
+.git
+.gitignore
+.github
+
+# Local/dev artifacts that must never enter an image layer
+.venv/
+venv/
+env/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+.DS_Store
+
+# Signed-URL local test fixtures and generated output must not ship in images
+input/
+output/
+*.webm
+*.mp4
+*.json.gz
+
+# Not needed at runtime
+tests/
+infra/
+.cursor/
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore

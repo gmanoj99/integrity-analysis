@@ -361,6 +361,40 @@ def _resolve_story_machine_facts(
     return out
 
 
+def resolve_section_id(
+    clip_ref: ClipRef | None,
+    time_range_ms: tuple[int, int],
+    media_index: list[MediaIndexEntry],
+    sections: list[Any] | None = None,
+) -> str | None:
+    """Resolve the single section a signal belongs to.
+
+    Tries the anchoring chunk's section first (deterministic, immune to clock
+    skew), then falls back to bracketing the signal's midpoint against media
+    chunks and finally against canonical session sections.
+    """
+    if clip_ref is not None and clip_ref.segments:
+        anchor_chunk_id = clip_ref.segments[0].chunk_id
+        for entry in media_index:
+            if entry.chunk_id == anchor_chunk_id and entry.section_id:
+                return entry.section_id
+
+    mid_ms = (time_range_ms[0] + time_range_ms[1]) // 2
+    for entry in media_index:
+        if entry.section_id and entry.session_start_ms <= mid_ms <= entry.session_end_ms:
+            return entry.section_id
+
+    for section in sections or []:
+        section_id = attr(section, "section_id", "sectionId")
+        if not section_id:
+            continue
+        start_ms = int(attr(section, "start_ms", "startMs", default=0) or 0)
+        end_ms = int(attr(section, "end_ms", "endMs", default=0) or 0)
+        if start_ms <= mid_ms <= end_ms:
+            return section_id
+    return None
+
+
 def build_integrity_stories(
     *,
     deliberation_bundle: DeliberationBundle,
@@ -369,6 +403,7 @@ def build_integrity_stories(
     correlated_signals: Any | None,
     covered_windows: int,
     media_index: list[MediaIndexEntry],
+    sections: list[Any] | None = None,
 ) -> IntegrityStoriesSection:
     active = active_signals(deliberation_bundle)
     episode_by_signal: dict[str, Any] = {}
@@ -444,6 +479,7 @@ def build_integrity_stories(
                 if attr(c, "question_number", "questionNumber") is not None
             }
         )
+        section_id = resolve_section_id(clip_ref, time_range_ms, media_index, sections)
         stories.append(
             IntegrityStoryEntry(
                 story_id=f"story_{len(stories) + 1}_{signal.signal_id}",
@@ -458,6 +494,7 @@ def build_integrity_stories(
                 confidence=min(signal.confidence, deliberation_bundle.recommendation.confidence),
                 time_range_ms=time_range_ms,
                 question_numbers=question_numbers,
+                section_id=section_id,
                 proof=IntegrityStoryProof(
                     time_range_ms=time_range_ms,
                     video_seek_ms=video_seek_ms,

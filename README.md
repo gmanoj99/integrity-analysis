@@ -4,28 +4,45 @@ Standalone Python 3.11+ port of the camera, screen, and rrweb integrity-analysis
 path. It has no Django, database, queue, cohort, coding-skill, plagiarism, or
 physical clip-extraction dependency.
 
-## Local signed-URL run
+## Local development environment
 
-1. Create and install the isolated environment:
+Create and install the isolated environment:
 
-   ```bash
-   python3 -m venv .venv
-   .venv/bin/pip install -e ".[test]"
-   ```
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[test]"
+```
 
-2. Copy `input/input.example.json` to `input/input.json` and replace the example
-   values. `activityTimeline` and `sections` are required because they anchor T0
-   and section coverage.
+`run_integrity_review(request, deps)` in `integrity_review_pipeline/pipeline.py`
+is the pure entrypoint: it takes a `ReviewRequest` and injected `PipelineDeps`
+(object store, Gemini client, cache, limiter, logger, media URI provider, and
+`organization_id`) and returns a validated `EvidenceBundle`. See
+`tests/test_pipeline.py` for a full in-memory, dependency-injected example.
 
-3. Set the Gemini key and run:
+## ECS worker
 
-   ```bash
-   export GEMINI_API_KEY="..."
-   .venv/bin/python run_review.py
-   ```
+`integrity_review_pipeline/worker/` is the production entrypoint: an SQS-driven
+Fargate worker that stages requests/results in S3, runs `run_integrity_review`,
+and publishes `VIDEO_ANALYSIS_RESPONSE` messages. Configuration is entirely via
+environment variables (see `worker/config.py`). Build and run it locally with:
 
-The validated result is written atomically to `output/evidence_bundle.json`.
-Both the signed-URL input and generated output are gitignored.
+```bash
+docker build -t integrity-review-worker .
+docker run --rm \
+  -e MEDIA_BUCKET=... -e REQUEST_BUCKET=... -e RESULT_BUCKET=... \
+  -e REQUEST_QUEUE_URL=... -e RESULT_QUEUE_URL=... \
+  -e AWS_REGION=... -e GEMINI_API_KEY=... \
+  integrity-review-worker
+```
+
+## Isolated AWS test infrastructure
+
+`infra/aws/` is an idempotent boto3 provisioner (no Terraform) for a
+non-production ECS Fargate stack: VPC, KMS, S3, SQS, ECR, Secrets Manager,
+IAM, ECS, CI/CD (CodeCommit/CodeBuild/CodePipeline/EventBridge), and
+CloudWatch alarms. See `infra/aws/config/beta.json` for the config shape and
+`infra/aws/cli.py` for the `bootstrap` / `plan` / `apply` / `status` /
+`destroy` commands.
 
 ## Input contract
 

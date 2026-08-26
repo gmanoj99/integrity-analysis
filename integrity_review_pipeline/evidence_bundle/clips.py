@@ -31,6 +31,7 @@ def build_media_index(master_timeline: Any) -> list[MediaIndexEntry]:
             MediaIndexEntry(
                 chunk_id=str(attr(record, "artifact_id", "artifactId")),
                 evidence_type=evidence_type,
+                section_id=attr(record, "section_id", "sectionId", default=None),
                 session_start_ms=int(
                     attr(record, "session_start_ms", "sessionStartMs", default=0) or 0
                 ),

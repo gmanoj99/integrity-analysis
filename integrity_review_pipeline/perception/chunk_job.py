@@ -471,25 +471,47 @@ def parse_screen_response(text: str, payload: PerceptionChunkJobPayload) -> Scre
             video_available=True,
         )
     except (json.JSONDecodeError, TypeError, ValueError):
-        return ScreenObservation(
-            chunk_id=payload.chunk_id,
-            sequence=payload.sequence,
-            section_id=payload.section_id,
-            start_ms=payload.start_offset_ms,
-            end_ms=payload.end_offset_ms,
-            exam_ui_visible="UNKNOWN",
-            foreground_app_class="UNKNOWN",
-            external_resource_labels=[],
-            ai_assistant_ui_visible="UNKNOWN",
-            secondary_workspace_visible="UNKNOWN",
-            fullscreen_exam_likely="UNKNOWN",
-            paste_cue_visible="UNKNOWN",
-            pasted_text_excerpt=None,
-            visible_question_ref=None,
-            confidence=0.0,
-            quality_caveat="Unparseable screen perception response",
-            video_available=False,
+        return _unknown_screen_observation(
+            payload, quality_caveat="Unparseable screen perception response"
         )
+
+
+def _unreviewed_camera_result(chunk_id: str) -> CachedPerceptionChunk:
+    """Degraded per-chunk result: a media/Gemini failure must not fail the whole review."""
+
+    result = PerceptionChunkResult(
+        chunk_id=chunk_id,
+        chunk_fully_reviewed=False,
+        capture_quality_tier="NONE",
+        events=[],
+    )
+    return CachedPerceptionChunk(result=result, observations=[])
+
+
+def _unknown_screen_observation(
+    payload: PerceptionChunkJobPayload, *, quality_caveat: str
+) -> ScreenObservation:
+    """Degraded per-chunk observation: a media/Gemini failure must not fail the whole review."""
+
+    return ScreenObservation(
+        chunk_id=payload.chunk_id,
+        sequence=payload.sequence,
+        section_id=payload.section_id,
+        start_ms=payload.start_offset_ms,
+        end_ms=payload.end_offset_ms,
+        exam_ui_visible="UNKNOWN",
+        foreground_app_class="UNKNOWN",
+        external_resource_labels=[],
+        ai_assistant_ui_visible="UNKNOWN",
+        secondary_workspace_visible="UNKNOWN",
+        fullscreen_exam_likely="UNKNOWN",
+        paste_cue_visible="UNKNOWN",
+        pasted_text_excerpt=None,
+        visible_question_ref=None,
+        confidence=0.0,
+        quality_caveat=quality_caveat,
+        video_available=False,
+    )
 
 
 async def _gemini_text(deps: PipelineDeps, *, parts: list[dict[str, Any]], config: dict[str, Any]) -> str | None:
@@ -549,43 +571,47 @@ async def analyze_camera_chunk(
         f"[VIDEO CLIP — session T+{round(payload.start_offset_ms / 1000)}s – "
         f"T+{round(payload.end_offset_ms / 1000)}s]"
     )
-    parts, delivery = await resolve_media_parts(
-        payload.signed_url,
-        "video/webm",
-        [user, clip_label],
-    )
-    deps.logger.info(
-        "perception-chunk-job: resolved media parts (camera)",
-        candidate_id=payload.candidate_id,
-        chunk_id=payload.chunk_id,
-        delivery=delivery,
-    )
+    try:
+        parts, delivery = await resolve_media_parts(
+            payload.signed_url,
+            "video/webm",
+            [user, clip_label],
+        )
+        deps.logger.info(
+            "perception-chunk-job: resolved media parts (camera)",
+            candidate_id=payload.candidate_id,
+            chunk_id=payload.chunk_id,
+            delivery=delivery,
+        )
 
-    flash_config = {
-        "temperature": 0,
-        "maxOutputTokens": PERCEPTION_MAX_OUTPUT_TOKENS,
-        "responseMimeType": "application/json",
-        "responseSchema": PERCEPTION_RESPONSE_SCHEMA,
-        "systemInstruction": PERCEPTION_SYSTEM_PROMPT,
-    }
-    text = await _gemini_text(deps, parts=parts, config=flash_config)
-    parsed = parse_events_response(text, payload)
-    if parsed is None:
+        flash_config = {
+            "temperature": 0,
+            "maxOutputTokens": PERCEPTION_MAX_OUTPUT_TOKENS,
+            "responseMimeType": "application/json",
+            "responseSchema": PERCEPTION_RESPONSE_SCHEMA,
+            "systemInstruction": PERCEPTION_SYSTEM_PROMPT,
+        }
         text = await _gemini_text(deps, parts=parts, config=flash_config)
         parsed = parse_events_response(text, payload)
+        if parsed is None:
+            text = await _gemini_text(deps, parts=parts, config=flash_config)
+            parsed = parse_events_response(text, payload)
+    except Exception as error:  # noqa: BLE001 - one chunk's media/Gemini failure must not fail the whole review
+        deps.logger.warning(
+            "perception-chunk-job: camera chunk analysis failed — returning empty result",
+            candidate_id=payload.candidate_id,
+            chunk_id=payload.chunk_id,
+            error=str(error),
+        )
+        return _unreviewed_camera_result(payload.chunk_id)
+
     if parsed is None:
         deps.logger.warning(
             "perception-chunk-job: camera chunk unparseable — returning empty result",
             candidate_id=payload.candidate_id,
             chunk_id=payload.chunk_id,
         )
-        result = PerceptionChunkResult(
-            chunk_id=payload.chunk_id,
-            chunk_fully_reviewed=False,
-            capture_quality_tier="NONE",
-            events=[],
-        )
-        return CachedPerceptionChunk(result=result, observations=[])
+        return _unreviewed_camera_result(payload.chunk_id)
 
     if text:
         await deps.cache.set(cache_key, {"text": text})
@@ -623,20 +649,32 @@ async def analyze_screen_chunk(
         end_s=round(payload.end_offset_ms / 1000),
         duration_s=round(payload.duration_ms / 1000),
     )
-    parts, delivery = await resolve_media_parts(payload.signed_url, "video/webm", [user])
-    deps.logger.info(
-        "perception-chunk-job: resolved media parts (screen)",
-        candidate_id=payload.candidate_id,
-        chunk_id=payload.chunk_id,
-        delivery=delivery,
-    )
-    flash_config = {
-        "temperature": 0,
-        "maxOutputTokens": 2048,
-        "responseMimeType": "application/json",
-        "systemInstruction": SCREEN_PERCEPTION_SYSTEM_PROMPT,
-    }
-    text = await _gemini_text(deps, parts=parts, config=flash_config)
+    try:
+        parts, delivery = await resolve_media_parts(payload.signed_url, "video/webm", [user])
+        deps.logger.info(
+            "perception-chunk-job: resolved media parts (screen)",
+            candidate_id=payload.candidate_id,
+            chunk_id=payload.chunk_id,
+            delivery=delivery,
+        )
+        flash_config = {
+            "temperature": 0,
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json",
+            "systemInstruction": SCREEN_PERCEPTION_SYSTEM_PROMPT,
+        }
+        text = await _gemini_text(deps, parts=parts, config=flash_config)
+    except Exception as error:  # noqa: BLE001 - one chunk's media/Gemini failure must not fail the whole review
+        deps.logger.warning(
+            "perception-chunk-job: screen chunk analysis failed — returning empty result",
+            candidate_id=payload.candidate_id,
+            chunk_id=payload.chunk_id,
+            error=str(error),
+        )
+        return _unknown_screen_observation(
+            payload, quality_caveat="Screen media fetch or analysis failed"
+        )
+
     observation = parse_screen_response(text or "", payload)
     if text:
         await deps.cache.set(cache_key, {"text": text})

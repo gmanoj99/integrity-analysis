@@ -1,9 +1,4 @@
-import json
-
-from integrity_review_pipeline.contracts.evidence import EvidenceType
-from integrity_review_pipeline.contracts.review import ReviewInput, ReviewRequest
 from integrity_review_pipeline.contracts.timeline import TimelineEventRecord
-from integrity_review_pipeline.io.manifest_builder import build_manifest_set
 from integrity_review_pipeline.timeline.activity_log_timeline import (
     parse_activity_log_epoch_ms,
 )
@@ -14,36 +9,75 @@ from integrity_review_pipeline.timeline.master_timeline import (
     parse_chunk_id,
     to_offset,
 )
+from integrity_review_pipeline.worker.contracts import (
+    ActivityLog,
+    ActivityTimeline,
+    Manifest,
+    ManifestChunk,
+    SectionSpec,
+    StagedReviewPayload,
+    build_review_request,
+)
 
 
-def _review_request(
+def _payload(
     *,
-    camera: list[str],
-    session: list[str],
-    activity_logs: list[dict],
-) -> ReviewRequest:
-    review_input = ReviewInput.model_validate(
-        {
-            "candidateId": "candidate-1",
-            "assessmentId": "assessment-1",
-            "cameraRecordings": camera,
-            "sessionRecordings": session,
-            "activityTimeline": activity_logs,
-            "sections": [
-                {
-                    "examAttemptId": "attempt-1",
-                    "examId": "exam-1",
-                    "sectionType": "mcq",
-                }
+    camera: list[tuple[str, int, int]],
+    session_webm: list[tuple[str, int, int]] = (),
+    session_rrweb: list[tuple[str, int]] = (),
+    activity_logs: list[dict] = (),
+) -> StagedReviewPayload:
+    chunks = [
+        ManifestChunk(
+            chunk_id=f"camera-{epoch}",
+            media_type="CAMERA_VIDEO",
+            exam_attempt_id="attempt-1",
+            s3_key=f"media/camera/attempt-1/{epoch}__{duration}.webm",
+            epoch_ms=epoch,
+            duration_ms=duration,
+        )
+        for _, epoch, duration in camera
+    ]
+    chunks += [
+        ManifestChunk(
+            chunk_id=f"screen-{epoch}",
+            media_type="SCREEN_VIDEO",
+            exam_attempt_id="attempt-1",
+            s3_key=f"media/session/attempt-1/{epoch}__{duration}.webm",
+            epoch_ms=epoch,
+            duration_ms=duration,
+        )
+        for _, epoch, duration in session_webm
+    ]
+    chunks += [
+        ManifestChunk(
+            chunk_id=f"rrweb-{epoch}",
+            media_type="RRWEB_EVENT",
+            exam_attempt_id="attempt-1",
+            s3_key=f"media/session/attempt-1/{epoch}.json.gz",
+            epoch_ms=epoch,
+            duration_ms=None,
+        )
+        for _, epoch in session_rrweb
+    ]
+    return StagedReviewPayload(
+        review_id="review-1",
+        org_assess_id="assessment-1",
+        attempt_user_id="candidate-1",
+        manifest=Manifest(chunks=chunks),
+        activity_timeline=ActivityTimeline(
+            activity_logs=[ActivityLog.model_validate(log) for log in activity_logs],
+            sections=[
+                SectionSpec(
+                    section_id="mcq",
+                    exam_id="exam-1",
+                    order=1,
+                    exam_attempt_id="attempt-1",
+                    start_datetime="2026-05-05 22:44:19",
+                    end_datetime=None,
+                )
             ],
-        }
-    )
-    return ReviewRequest(
-        candidate_id=review_input.candidate_id,
-        assessment_id=review_input.assessment_id,
-        activity_timeline=review_input.activity_timeline,
-        sections=review_input.sections,
-        evidence=build_manifest_set(review_input),
+        ),
     )
 
 
@@ -76,16 +110,18 @@ def test_merges_upload_jitter_into_one_segment() -> None:
 
 
 def test_rrweb_span_uses_event_timestamps_when_present() -> None:
-    request = _review_request(
-        camera=["https://media.example/camera/attempt-1/1700000000000__60000.webm"],
-        session=["https://media.example/session/attempt-1/1700000100000.json"],
-        activity_logs=[
-            {
-                "activityTypeEnum": "ASSESSMENT_STARTED",
-                "creationDatetime": "2026-05-05 22:44:19",
-                "order": 0,
-            }
-        ],
+    request = build_review_request(
+        _payload(
+            camera=[("c", 1_700_000_000_000, 60_000)],
+            session_rrweb=[("r", 1_700_000_100_000)],
+            activity_logs=[
+                {
+                    "order": 0,
+                    "activity_type": "ASSESSMENT_STARTED",
+                    "creation_datetime": "2026-05-05 22:44:19",
+                }
+            ],
+        )
     )
     t0 = parse_activity_log_epoch_ms("2026-05-05 22:44:19")
     timeline = build_master_timeline(
@@ -111,19 +147,21 @@ def test_rrweb_span_uses_event_timestamps_when_present() -> None:
 
 
 def test_exposes_legacy_spans_layers_and_sync_report() -> None:
-    request = _review_request(
-        camera=[
-            "https://media.example/camera/attempt-1/1700000000000__60000.webm",
-            "https://media.example/camera/attempt-1/1700000060000__60000.webm",
-        ],
-        session=["https://media.example/session/attempt-1/1700000000000.json"],
-        activity_logs=[
-            {
-                "activityTypeEnum": "ASSESSMENT_STARTED",
-                "creationDatetime": "2026-05-05 22:44:19",
-                "order": 0,
-            }
-        ],
+    request = build_review_request(
+        _payload(
+            camera=[
+                ("c", 1_700_000_000_000, 60_000),
+                ("c", 1_700_000_060_000, 60_000),
+            ],
+            session_rrweb=[("r", 1_700_000_000_000)],
+            activity_logs=[
+                {
+                    "order": 0,
+                    "activity_type": "ASSESSMENT_STARTED",
+                    "creation_datetime": "2026-05-05 22:44:19",
+                }
+            ],
+        )
     )
     timeline = build_master_timeline(request)
     assert timeline.video_chunk_spans
@@ -136,19 +174,20 @@ def test_exposes_legacy_spans_layers_and_sync_report() -> None:
 
 
 def test_gap_reason_uses_section_overlap_not_symmetric_diff() -> None:
-    request = _review_request(
-        camera=[
-            "https://media.example/camera/attempt-1/1700000000000__60000.webm",
-            "https://media.example/camera/attempt-1/1700000120000__60000.webm",
-        ],
-        session=[],
-        activity_logs=[
-            {
-                "activityTypeEnum": "ASSESSMENT_STARTED",
-                "creationDatetime": "2026-05-05 22:44:19",
-                "order": 0,
-            }
-        ],
+    request = build_review_request(
+        _payload(
+            camera=[
+                ("c", 1_700_000_000_000, 60_000),
+                ("c", 1_700_000_120_000, 60_000),
+            ],
+            activity_logs=[
+                {
+                    "order": 0,
+                    "activity_type": "ASSESSMENT_STARTED",
+                    "creation_datetime": "2026-05-05 22:44:19",
+                }
+            ],
+        )
     )
     # Force two segments with a genuine stop between them (> MERGE_TOLERANCE).
     timeline = build_master_timeline(request)

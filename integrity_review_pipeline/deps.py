@@ -64,3 +64,4 @@ class PipelineDeps:
     limiter: GeminiLimiter
     logger: Logger
     media_uri_provider: MediaUriProvider
+    organization_id: str

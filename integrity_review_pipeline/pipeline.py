@@ -36,35 +36,38 @@ def _chunk_map(request: ReviewRequest) -> dict[str, Any]:
     }
 
 
-def _perception_jobs(request: ReviewRequest, timeline: Any) -> list[PerceptionChunkJobPayload]:
+async def _perception_jobs(
+    request: ReviewRequest, timeline: Any, deps: PipelineDeps
+) -> list[PerceptionChunkJobPayload]:
     chunks = _chunk_map(request)
     spans = [*timeline.video_chunk_spans, *timeline.screen_chunk_spans]
-    payloads: list[PerceptionChunkJobPayload] = []
-    for span in spans:
-        chunk = chunks.get(span.chunk_id)
-        if chunk is None or chunk.sidecar_role is not None:
-            continue
-        payloads.append(
-            PerceptionChunkJobPayload(
-                organization_id="local",
-                candidate_id=request.candidate_id,
-                assessment_id=request.assessment_id,
-                reviewer_id="system:local-runner",
-                evidence_type=(
-                    "video"
-                    if chunk.evidence_type == EvidenceType.VIDEO
-                    else "screenRecording"
-                ),
-                chunk_id=chunk.chunk_id,
-                sequence=chunk.sequence,
-                signed_url=str(chunk.signed_url),
-                duration_ms=span.duration_ms,
-                start_offset_ms=span.start_offset_ms,
-                end_offset_ms=span.end_offset_ms,
-                section_id=chunk.section_id,
-            )
+    relevant = [
+        (span, chunks[span.chunk_id])
+        for span in spans
+        if span.chunk_id in chunks and chunks[span.chunk_id].sidecar_role is None
+    ]
+    media_uris = await asyncio.gather(
+        *(deps.media_uri_provider.media_uri_for(chunk) for _, chunk in relevant)
+    )
+    return [
+        PerceptionChunkJobPayload(
+            organization_id=deps.organization_id,
+            candidate_id=request.candidate_id,
+            assessment_id=request.assessment_id,
+            reviewer_id="system:local-runner",
+            evidence_type=(
+                "video" if chunk.evidence_type == EvidenceType.VIDEO else "screenRecording"
+            ),
+            chunk_id=chunk.chunk_id,
+            sequence=chunk.sequence,
+            signed_url=media_uri,
+            duration_ms=span.duration_ms,
+            start_offset_ms=span.start_offset_ms,
+            end_offset_ms=span.end_offset_ms,
+            section_id=chunk.section_id,
         )
-    return payloads
+        for (span, chunk), media_uri in zip(relevant, media_uris, strict=True)
+    ]
 
 
 def _video_windows(observations: list[PerceptionObservation]) -> list[VideoObservationWindow]:
@@ -103,7 +106,7 @@ async def _load_rrweb(request: ReviewRequest, deps: PipelineDeps) -> list[Any]:
         return (
             chunk.chunk_id,
             chunk.sequence,
-            await deps.object_store.get_bytes(str(chunk.signed_url)),
+            await deps.object_store.get_bytes(chunk.source_ref),
         )
 
     loaded = await asyncio.gather(*(load(chunk) for chunk in manifest.chunks))
@@ -133,7 +136,7 @@ async def run_integrity_review(
         artifacts=len(timeline.artifact_registry),
     )
 
-    jobs = _perception_jobs(request, timeline)
+    jobs = await _perception_jobs(request, timeline, deps)
     await asyncio.gather(
         *(process_perception_chunk_job(deps, payload) for payload in jobs)
     )
@@ -141,14 +144,14 @@ async def run_integrity_review(
     camera_bundle, screen_bundle = await asyncio.gather(
         build_perception_bundle(
             deps,
-            organization_id="local",
+            organization_id=deps.organization_id,
             candidate_id=request.candidate_id,
             assessment_id=request.assessment_id,
             master_timeline=timeline,
         ),
         build_screen_perception_bundle(
             deps,
-            organization_id="local",
+            organization_id=deps.organization_id,
             candidate_id=request.candidate_id,
             assessment_id=request.assessment_id,
             master_timeline=timeline,
@@ -230,7 +233,7 @@ async def run_integrity_review(
     media_index = [
         entry.model_copy(
             update={
-                "source_ref": str(chunks[entry.chunk_id].signed_url),
+                "source_ref": chunks[entry.chunk_id].source_ref,
                 "section_id": chunks[entry.chunk_id].section_id,
             }
         )

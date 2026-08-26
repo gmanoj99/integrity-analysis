@@ -48,6 +48,7 @@ class RrwebChunkSpan(ContractModel):
     chunk_id: str
     start_offset_ms: int
     end_offset_ms: int
+    section_id: str | None = None
 
 
 class UnknownSegment(ContractModel):

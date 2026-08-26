@@ -3,7 +3,6 @@ import gzip
 import json
 import zlib
 
-from integrity_review_pipeline.io.review_io import load_review_request
 from integrity_review_pipeline.media.keystroke_reader import decode_rrweb_chunk
 from integrity_review_pipeline.media.perception_media import (
     EBML_MAGIC,
@@ -15,6 +14,15 @@ from integrity_review_pipeline.timeline.activity_log_timeline import (
 from integrity_review_pipeline.timeline.master_timeline import (
     build_master_timeline,
     parse_chunk_id,
+)
+from integrity_review_pipeline.worker.contracts import (
+    ActivityLog,
+    ActivityTimeline,
+    Manifest,
+    ManifestChunk,
+    SectionSpec,
+    StagedReviewPayload,
+    build_review_request,
 )
 
 
@@ -42,38 +50,52 @@ def test_chunk_epoch_is_upload_time_for_duration_chunks() -> None:
     assert parsed.end_epoch_ms == 1_700_000_060_000
 
 
-def test_builds_one_master_timeline(tmp_path) -> None:
-    input_path = tmp_path / "input.json"
-    input_path.write_text(
-        json.dumps(
-            {
-                "candidateId": "candidate-1",
-                "assessmentId": "assessment-1",
-                "cameraRecordings": [
-                    "https://media.example/camera/attempt-1/"
-                    "1778001319000__60000.webm"
-                ],
-                "sessionRecordings": [
-                    "https://media.example/session/attempt-1/1778001319000.json"
-                ],
-                "activityTimeline": [
-                    {
-                        "activityTypeEnum": "ASSESSMENT_STARTED",
-                        "creationDatetime": "2026-05-05 22:44:19",
-                        "order": 0,
-                    }
-                ],
-                "sections": [
-                    {
-                        "examAttemptId": "attempt-1",
-                        "examId": "exam-1",
-                        "sectionType": "mcq",
-                    }
-                ],
-            }
-        )
+def test_builds_one_master_timeline() -> None:
+    payload = StagedReviewPayload(
+        review_id="review-1",
+        org_assess_id="assessment-1",
+        attempt_user_id="candidate-1",
+        manifest=Manifest(
+            chunks=[
+                ManifestChunk(
+                    chunk_id="camera-1",
+                    media_type="CAMERA_VIDEO",
+                    exam_attempt_id="attempt-1",
+                    s3_key="media/camera/attempt-1/1778001319000__60000.webm",
+                    epoch_ms=1_778_001_319_000,
+                    duration_ms=60_000,
+                ),
+                ManifestChunk(
+                    chunk_id="rrweb-1",
+                    media_type="RRWEB_EVENT",
+                    exam_attempt_id="attempt-1",
+                    s3_key="media/session/attempt-1/1778001319000.json",
+                    epoch_ms=1_778_001_319_000,
+                    duration_ms=None,
+                ),
+            ]
+        ),
+        activity_timeline=ActivityTimeline(
+            activity_logs=[
+                ActivityLog(
+                    order=0,
+                    activity_type="ASSESSMENT_STARTED",
+                    creation_datetime="2026-05-05 22:44:19",
+                )
+            ],
+            sections=[
+                SectionSpec(
+                    section_id="mcq",
+                    exam_id="exam-1",
+                    order=1,
+                    exam_attempt_id="attempt-1",
+                    start_datetime="2026-05-05 22:44:19",
+                    end_datetime=None,
+                )
+            ],
+        ),
     )
-    timeline = build_master_timeline(load_review_request(input_path))
+    timeline = build_master_timeline(build_review_request(payload))
     assert timeline.sync_report is not None
     assert timeline.sync_report.t0_source == "activity_logs"
     assert timeline.session_start_ms == parse_activity_log_epoch_ms("2026-05-05 22:44:19")

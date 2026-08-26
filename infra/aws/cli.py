@@ -1,11 +1,11 @@
 """Command line entrypoint: bootstrap, plan, apply, status, destroy.
 
 Usage:
-    python -m infra.aws.cli bootstrap --config infra/aws/config/ecs-test.json
-    python -m infra.aws.cli plan      --config infra/aws/config/ecs-test.json
-    python -m infra.aws.cli apply     --config infra/aws/config/ecs-test.json --image-tag <sha> --yes
-    python -m infra.aws.cli status    --config infra/aws/config/ecs-test.json --deep
-    python -m infra.aws.cli destroy   --config infra/aws/config/ecs-test.json --yes
+    python -m infra.aws.cli bootstrap --config infra/aws/config/beta.json
+    python -m infra.aws.cli plan      --config infra/aws/config/beta.json
+    python -m infra.aws.cli apply     --config infra/aws/config/beta.json --image-tag <sha> --yes
+    python -m infra.aws.cli status    --config infra/aws/config/beta.json --deep
+    python -m infra.aws.cli destroy   --config infra/aws/config/beta.json --yes
 """
 
 from __future__ import annotations

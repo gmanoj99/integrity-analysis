@@ -3,13 +3,18 @@ from typing import Any
 
 import pytest
 
-from integrity_review_pipeline.adapters.defaults import (
-    InMemoryPerceptionCache,
-    SemaphoreLimiter,
-)
+from integrity_review_pipeline.adapters.memory_cache import InMemoryPerceptionCache
 from integrity_review_pipeline.deps import PipelineDeps
-from integrity_review_pipeline.io.review_io import load_review_request
 from integrity_review_pipeline.pipeline import run_integrity_review
+from integrity_review_pipeline.worker.contracts import (
+    ActivityLog,
+    ActivityTimeline,
+    Manifest,
+    ManifestChunk,
+    SectionSpec,
+    StagedReviewPayload,
+    build_review_request,
+)
 
 
 class FakeObjectStore:
@@ -49,6 +54,14 @@ class FakeGemini:
         }
 
 
+class NoopLimiter:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
 class NoopLogger:
     def debug(self, message: str, **fields: Any) -> None:
         pass
@@ -63,13 +76,13 @@ class NoopLogger:
         pass
 
 
-class MediaProvider:
+class FakeMediaUriProvider:
     async def media_uri_for(self, chunk: Any) -> str:
-        return str(chunk.signed_url)
+        return f"https://media.example/{chunk.source_ref}"
 
 
 @pytest.mark.asyncio
-async def test_input_to_evidence_bundle_pipeline(tmp_path, monkeypatch) -> None:
+async def test_input_to_evidence_bundle_pipeline(monkeypatch) -> None:
     async def fake_media_parts(*args: Any, **kwargs: Any):
         return ([{"fileData": {"fileUri": args[0], "mimeType": "video/webm"}}], "file_data")
 
@@ -77,44 +90,59 @@ async def test_input_to_evidence_bundle_pipeline(tmp_path, monkeypatch) -> None:
         "integrity_review_pipeline.perception.chunk_job.resolve_media_parts",
         fake_media_parts,
     )
-    input_path = tmp_path / "input.json"
-    input_path.write_text(
-        json.dumps(
-            {
-                "candidateId": "candidate-1",
-                "assessmentId": "assessment-1",
-                "cameraRecordings": [
-                    "https://media.example/camera/attempt-1/"
-                    "1700000060000__60000.webm"
-                ],
-                "sessionRecordings": [
-                    "https://media.example/session/attempt-1/1700000060000.json"
-                ],
-                "activityTimeline": [
-                    {
-                        "eventType": "ASSESSMENT_STARTED",
-                        "timestamp": 1_700_000_000_000,
-                        "order": 0,
-                    }
-                ],
-                "sections": [
-                    {
-                        "examAttemptId": "attempt-1",
-                        "examId": "exam-1",
-                        "sectionType": "mcq",
-                    }
-                ],
-            }
-        )
+    payload = StagedReviewPayload(
+        review_id="review-1",
+        org_assess_id="assessment-1",
+        attempt_user_id="candidate-1",
+        manifest=Manifest(
+            chunks=[
+                ManifestChunk(
+                    chunk_id="camera-1",
+                    media_type="CAMERA_VIDEO",
+                    exam_attempt_id="attempt-1",
+                    s3_key="media/camera/attempt-1/1778001319000__60000.webm",
+                    epoch_ms=1_778_001_319_000,
+                    duration_ms=60_000,
+                ),
+                ManifestChunk(
+                    chunk_id="rrweb-1",
+                    media_type="RRWEB_EVENT",
+                    exam_attempt_id="attempt-1",
+                    s3_key="media/session/attempt-1/1778001319000.json",
+                    epoch_ms=1_778_001_319_000,
+                    duration_ms=None,
+                ),
+            ]
+        ),
+        activity_timeline=ActivityTimeline(
+            activity_logs=[
+                ActivityLog(
+                    order=0,
+                    activity_type="ASSESSMENT_STARTED",
+                    creation_datetime="2026-05-05 22:44:19",
+                )
+            ],
+            sections=[
+                SectionSpec(
+                    section_id="mcq",
+                    exam_id="exam-1",
+                    order=1,
+                    exam_attempt_id="attempt-1",
+                    start_datetime="2026-05-05 22:44:19",
+                    end_datetime=None,
+                )
+            ],
+        ),
     )
-    request = load_review_request(input_path)
+    request = build_review_request(payload)
     deps = PipelineDeps(
         object_store=FakeObjectStore(),
         gemini=FakeGemini(),
         cache=InMemoryPerceptionCache(),
-        limiter=SemaphoreLimiter(12),
+        limiter=NoopLimiter(),
         logger=NoopLogger(),
-        media_uri_provider=MediaProvider(),
+        media_uri_provider=FakeMediaUriProvider(),
+        organization_id="test-org",
     )
     bundle = await run_integrity_review(request, deps)
     payload = bundle.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -124,4 +152,4 @@ async def test_input_to_evidence_bundle_pipeline(tmp_path, monkeypatch) -> None:
     assert payload["recommendation"]["category"] == "CLEAR"
     assert "questionInsights" not in payload
     assert "performanceEvidence" not in payload
-    assert payload["mediaIndex"][0]["sourceRef"].startswith("https://")
+    assert payload["mediaIndex"][0]["sourceRef"] == "media/camera/attempt-1/1778001319000__60000.webm"

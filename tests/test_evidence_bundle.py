@@ -14,6 +14,7 @@ from integrity_review_pipeline.contracts.deliberation import (
 from integrity_review_pipeline.evidence_bundle.section_builders import (
     build_behavior_summary,
     build_recommendation_section,
+    resolve_section_id,
 )
 from integrity_review_pipeline.evidence_bundle.service import (
     EvidenceBundleInput,
@@ -21,7 +22,7 @@ from integrity_review_pipeline.evidence_bundle.service import (
     build_media_index,
     resolve_offset_clip_ref,
 )
-from integrity_review_pipeline.contracts.evidence_bundle import MediaIndexEntry
+from integrity_review_pipeline.contracts.evidence_bundle import ClipRef, ClipSegment, MediaIndexEntry
 
 
 def test_resolve_offset_clip_ref_uses_media_index_segments() -> None:
@@ -90,12 +91,14 @@ def test_assemble_evidence_bundle_omits_question_and_performance_sections() -> N
             SimpleNamespace(
                 artifact_id="1700000060000__60000.webm",
                 artifact_type="video",
+                section_id="section-2",
                 session_start_ms=0,
                 session_end_ms=60_000,
                 local_end_ms=60_000,
                 sequence=0,
             )
-        ]
+        ],
+        sections=[],
     )
     bundle = assemble_evidence_bundle(
         EvidenceBundleInput(
@@ -131,6 +134,7 @@ def test_assemble_evidence_bundle_omits_question_and_performance_sections() -> N
     assert "questionInsights" not in dumped
     assert "performanceEvidence" not in dumped
     assert len(dumped["mediaIndex"]) == 1
+    assert dumped["mediaIndex"][0]["sectionId"] == "section-2"
     assert "finalConfidence" not in dumped["confidence"]
     assert "corroborationDowngradeApplied" not in dumped["confidence"]
     assert "totalValidated" not in dumped["detectedSignals"]
@@ -140,6 +144,9 @@ def test_assemble_evidence_bundle_omits_question_and_performance_sections() -> N
     assert "deliberationCompositeHash" not in dumped["provenance"]
     assert "durationMs" not in dumped["trackBObservations"][0]["clipRef"]
     assert "seekToMs" not in dumped["trackBObservations"][0]["clipRef"]
+    assert dumped["integrityStories"]["stories"][0]["sectionId"] == "section-2"
+    assert dumped["detectedSignals"]["signals"][0]["sectionId"] == "section-2"
+    assert dumped["trackBObservations"][0]["sectionId"] == "section-2"
 
 
 def test_build_media_index_skips_rrweb() -> None:
@@ -148,6 +155,7 @@ def test_build_media_index_skips_rrweb() -> None:
             SimpleNamespace(
                 artifact_id="1700000060000.json",
                 artifact_type="rrweb",
+                section_id="section-1",
                 session_start_ms=0,
                 session_end_ms=90_000,
                 local_end_ms=90_000,
@@ -156,6 +164,7 @@ def test_build_media_index_skips_rrweb() -> None:
             SimpleNamespace(
                 artifact_id="1700000060000__60000.webm",
                 artifact_type="screenRecording",
+                section_id="section-2",
                 session_start_ms=0,
                 session_end_ms=60_000,
                 local_end_ms=60_000,
@@ -166,6 +175,74 @@ def test_build_media_index_skips_rrweb() -> None:
     index = build_media_index(timeline)
     assert len(index) == 1
     assert index[0].evidence_type == "screen"
+    assert index[0].section_id == "section-2"
+
+
+def test_resolve_section_id_prefers_anchoring_chunk() -> None:
+    media_index = [
+        MediaIndexEntry(
+            chunk_id="video-section-2-1700000060000__60000",
+            evidence_type="video",
+            section_id="section-2",
+            session_start_ms=0,
+            session_end_ms=60_000,
+            duration_ms=60_000,
+            sequence=0,
+        ),
+        MediaIndexEntry(
+            chunk_id="video-section-7-1700000120000__60000",
+            evidence_type="video",
+            section_id="section-7",
+            session_start_ms=60_000,
+            session_end_ms=120_000,
+            duration_ms=60_000,
+            sequence=1,
+        ),
+    ]
+    clip_ref = ClipRef(
+        segments=[
+            ClipSegment(
+                chunk_id="video-section-2-1700000060000__60000",
+                evidence_type="video",
+                seek_to_ms=10_000,
+            )
+        ],
+        clip_start_ms=10_000,
+        clip_end_ms=20_000,
+        cache_key="abc123",
+    )
+    assert (
+        resolve_section_id(clip_ref, (10_000, 20_000), media_index, sections=[]) == "section-2"
+    )
+
+
+def test_resolve_section_id_falls_back_to_time_bracket_without_clip() -> None:
+    media_index = [
+        MediaIndexEntry(
+            chunk_id="video-section-7-1700000120000__60000",
+            evidence_type="video",
+            section_id="section-7",
+            session_start_ms=60_000,
+            session_end_ms=120_000,
+            duration_ms=60_000,
+            sequence=0,
+        )
+    ]
+    assert resolve_section_id(None, (70_000, 80_000), media_index, sections=[]) == "section-7"
+
+
+def test_resolve_section_id_falls_back_to_canonical_sections_for_rrweb_only() -> None:
+    # No video/screen chunks in media_index (e.g. rrweb-only signal); must use
+    # the canonical session sections as the last-resort resolution source.
+    sections = [
+        SimpleNamespace(section_id="section-1", start_ms=0, end_ms=100_000),
+        SimpleNamespace(section_id="section-2", start_ms=100_000, end_ms=200_000),
+    ]
+    assert resolve_section_id(None, (120_000, 130_000), [], sections=sections) == "section-2"
+
+
+def test_resolve_section_id_returns_none_when_unresolvable() -> None:
+    assert resolve_section_id(None, (0, 0), [], sections=[]) is None
 
 
 def test_behavior_summary_survives_track_b_only_review() -> None:

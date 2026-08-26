@@ -24,7 +24,8 @@ class EvidenceChunkRef(ContractModel):
     evidence_type: EvidenceType
     chunk_id: str = Field(min_length=1)
     sequence: int = Field(ge=0)
-    signed_url: AnyHttpUrl
+    source_ref: str = Field(min_length=1)
+    signed_url: AnyHttpUrl | None = None
     duration_ms: int | None = Field(default=None, ge=0)
     section_id: str | None = None
     sidecar_role: str | None = None

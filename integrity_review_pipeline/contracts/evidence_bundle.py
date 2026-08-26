@@ -97,6 +97,7 @@ class DetectedSignalEntry(ContractModel):
     timestamp_ms: int
     confidence: float = Field(ge=0, le=1)
     resolution: SignalResolution
+    section_id: str | None = None
     source_types: list[str] = Field(default_factory=list)
     supporting_observations: list[str] = Field(default_factory=list)
     supporting_machine_facts: list[str] = Field(default_factory=list)
@@ -126,6 +127,7 @@ class TrackBObservationCard(ContractModel):
     timestamp_window_ms: tuple[int, int]
     duration_ms: int = Field(ge=0)
     nested_under_signal_id: str | None = None
+    section_id: str | None = None
     clip_ref: ClipRef | None = None
     detail: str | None = None
 
@@ -267,6 +269,7 @@ class IntegrityStoryEntry(ContractModel):
     confidence: float = Field(ge=0, le=1)
     time_range_ms: tuple[int, int]
     question_numbers: list[int] = Field(default_factory=list)
+    section_id: str | None = None
     proof: IntegrityStoryProof
 
 

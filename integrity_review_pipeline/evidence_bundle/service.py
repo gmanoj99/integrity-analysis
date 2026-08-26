@@ -43,6 +43,7 @@ from .section_builders import (
     build_smart_student_notes,
     build_timeline_entries,
     build_unknown_panel,
+    resolve_section_id,
     signal_time_span,
     to_reviewer_prose,
 )
@@ -69,6 +70,7 @@ def build_curated_track_b_observations(
     track_b_findings: list[Any],
     media_index: list,
     integrity_stories,
+    sections: list[Any] | None = None,
 ) -> list[TrackBObservationCard]:
     cards: list[TrackBObservationCard] = []
     for finding in track_b_findings:
@@ -97,6 +99,11 @@ def build_curated_track_b_observations(
             "suspicious_eye_movement": "Sustained gaze",
         }.get(event_type, event_type.replace("_", " ").strip().capitalize())
         title = f"{title} · {round(duration_ms / 1000)}s"
+        clip_ref = resolve_offset_clip_ref(
+            event_ms=t0,
+            duration_ms=duration_ms,
+            media_index=media_index,
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{event_type}_{t0}_{t1}",
@@ -105,11 +112,8 @@ def build_curated_track_b_observations(
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 nested_under_signal_id=nested,
-                clip_ref=resolve_offset_clip_ref(
-                    event_ms=t0,
-                    duration_ms=duration_ms,
-                    media_index=media_index,
-                ),
+                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                clip_ref=clip_ref,
                 detail=str(attr(finding, "reasoning", default="")),
             )
         )
@@ -193,17 +197,22 @@ def _build_detected_signals(
     *,
     perception_bundle: Any,
     machine_facts_bundle: Any,
+    media_index: list[Any],
+    sections: list[Any] | None = None,
 ) -> DetectedSignalsSection:
     signals: list[DetectedSignalEntry] = []
     for signal in bundle.validated_signals:
         span = signal_time_span(signal, perception_bundle, machine_facts_bundle)
+        start_ms = int(span["start_ms"])
+        end_ms = int(span["end_ms"])
         signals.append(
             DetectedSignalEntry(
                 signal_id=signal.signal_id,
                 signal_type=signal.signal_type,
-                timestamp_ms=int(span["start_ms"]),
+                timestamp_ms=start_ms,
                 confidence=signal.confidence,
                 resolution=signal.resolution,
+                section_id=resolve_section_id(None, (start_ms, end_ms), media_index, sections),
                 source_types=[str(t) for t in signal.source_types],
                 supporting_observations=signal.observations_cited,
                 supporting_machine_facts=signal.machine_facts_cited,
@@ -271,6 +280,7 @@ def _build_correlated_patterns(correlated_signals: Any | None) -> CorrelatedPatt
 def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
     bundle = input_data.deliberation_bundle
     media_index = build_media_index(input_data.master_timeline)
+    sections = attr(input_data.master_timeline, "sections", default=[]) or []
     covered_windows = int(
         attr(input_data.perception_bundle, "covered_windows", "coveredWindows", default=0) or 0
     )
@@ -285,12 +295,14 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         correlated_signals=input_data.correlated_signals,
         covered_windows=covered_windows,
         media_index=media_index,
+        sections=sections,
     )
     track_b_findings = input_data.track_b_findings or []
     track_b_observations = build_curated_track_b_observations(
         track_b_findings=track_b_findings,
         media_index=media_index,
         integrity_stories=integrity_stories,
+        sections=sections,
     )
     timeline_entries = build_timeline_entries(
         deliberation_bundle=bundle,
@@ -320,6 +332,8 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             bundle,
             perception_bundle=input_data.perception_bundle,
             machine_facts_bundle=input_data.machine_facts_bundle,
+            media_index=media_index,
+            sections=sections,
         ),
         correlated_patterns=correlated_patterns,
         episode_analysis=EpisodeAnalysisSection(

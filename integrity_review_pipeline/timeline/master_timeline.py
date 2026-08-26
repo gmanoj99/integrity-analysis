@@ -436,6 +436,7 @@ def build_rrweb_spans(
                 chunk_id=chunk.chunk_id,
                 start_offset_ms=start_offset_ms,
                 end_offset_ms=end_offset_ms,
+                section_id=chunk.section_id,
             )
         )
         prev_end_raw_ms = max(prev_end_raw_ms, end_raw_ms)
@@ -463,7 +464,7 @@ def build_merged_segments(
     section_id = (
         first.section_id
         if isinstance(first, VideoChunkSpan)
-        else parse_section_from_chunk_id(first.chunk_id)
+        else parse_section_from_chunk_id(first.chunk_id) or first.section_id
     )
     segments = [
         MergedSegment(
@@ -483,7 +484,7 @@ def build_merged_segments(
         section = (
             span.section_id
             if isinstance(span, VideoChunkSpan)
-            else parse_section_from_chunk_id(span.chunk_id)
+            else parse_section_from_chunk_id(span.chunk_id) or span.section_id
         )
         if gap_ms <= tolerance_ms:
             new_end = max(current.end_ms, end(span))
@@ -601,7 +602,7 @@ def build_artifact_registry(
             ArtifactRecord(
                 artifact_id=span.chunk_id,
                 artifact_type="rrweb",
-                section_id=parse_section_from_chunk_id(span.chunk_id),
+                section_id=parse_section_from_chunk_id(span.chunk_id) or span.section_id,
                 sequence=span.sequence,
                 session_start_ms=span.start_offset_ms,
                 session_end_ms=span.end_offset_ms,
