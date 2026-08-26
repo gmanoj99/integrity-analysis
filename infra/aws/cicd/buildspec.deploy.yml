@@ -1,0 +1,23 @@
+version: 0.2
+
+# Runs in the CodeBuild "deploy" project (integrity-review-beta-deploy-runner
+# role, which also carries infrastructure_provisioner_policy). Reads the image
+# tag produced by the build stage and runs this repo's own provisioner to
+# reconcile the beta stack, including registering a new ECS task definition
+# revision pointing at that image and updating the service.
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install --no-cache-dir .
+
+  build:
+    commands:
+      - IMAGE_TAG="$(cat image_tag.txt)"
+      - echo "Deploying image tag ${IMAGE_TAG} via ${INFRA_CONFIG_PATH}"
+      - python -m infra.aws.cli apply --config "${INFRA_CONFIG_PATH}" --image-tag "${IMAGE_TAG}" --yes
+
+  post_build:
+    commands:
+      - python -m infra.aws.cli status --config "${INFRA_CONFIG_PATH}"
