@@ -46,7 +46,6 @@ See `infra/aws/config/beta.json` for the config shape and `infra/aws/cli.py`
 for the `bootstrap` / `plan` / `apply` / `status` / `destroy` commands.
 
 ## Input contract
-
 ```json
 {
   "candidateId": "attempt-user-id",
