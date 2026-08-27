@@ -6,7 +6,6 @@ the manifest after each step and rolling back only what *this* apply() call
 created if a later step fails. ``destroy`` deletes everything this tool has
 ever created, in reverse order. ``plan`` and ``status`` are read-only.
 """
-
 from __future__ import annotations
 
 import logging

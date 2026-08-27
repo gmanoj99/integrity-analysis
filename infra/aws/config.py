@@ -4,7 +4,6 @@ Values live in a JSON file per environment (see
 ``infra/aws/config/beta.json``); secrets such as the Gemini API key are
 never read from this file.
 """
-
 from __future__ import annotations
 
 import json

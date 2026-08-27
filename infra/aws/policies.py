@@ -4,7 +4,6 @@ Every function returns a plain policy-document dict; nothing here calls
 boto3. Keeping policy *shape* separate from IAM API calls (``utils/iam_utils``)
 makes each statement independently unit-testable and reviewable.
 """
-
 from __future__ import annotations
 
 from typing import Any

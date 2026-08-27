@@ -6,7 +6,6 @@ from typing import Any
 
 from ..specs import AlarmSpec
 
-
 def ensure_alarm(client: Any, spec: AlarmSpec) -> None:
     """Create or update the alarm.
 
