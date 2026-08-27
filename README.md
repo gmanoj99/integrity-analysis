@@ -39,10 +39,11 @@ docker run --rm \
 
 `infra/aws/` is an idempotent boto3 provisioner (no Terraform) for a
 non-production ECS Fargate stack: VPC, KMS, S3, SQS, ECR, Secrets Manager,
-IAM, ECS, CI/CD (CodeCommit/CodeBuild/CodePipeline/EventBridge), and
-CloudWatch alarms. See `infra/aws/config/beta.json` for the config shape and
-`infra/aws/cli.py` for the `bootstrap` / `plan` / `apply` / `status` /
-`destroy` commands.
+IAM, ECS, and CloudWatch alarms. It does not provision its own CI/CD; an
+externally-owned CodeBuild project runs `infra/aws/cicd/buildspec.yml`,
+which calls `bootstrap` / `apply` / docker build+push / `status` in sequence.
+See `infra/aws/config/beta.json` for the config shape and `infra/aws/cli.py`
+for the `bootstrap` / `plan` / `apply` / `status` / `destroy` commands.
 
 ## Input contract
 

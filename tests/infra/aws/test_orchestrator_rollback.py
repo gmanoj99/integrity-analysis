@@ -73,7 +73,6 @@ def _config() -> EnvironmentConfig:
         organization_id="local",
         storage_bucket_name="nxtwave-assessments-backend-nxtwave-media-static",
         storage_kms_key_arn=None,
-        image_publisher_trusted_principal_arns=(),
         network=NetworkConfig(
             vpc_cidr_block="10.90.0.0/16",
             public_subnet_cidrs=(),
@@ -154,46 +153,6 @@ def test_rollback_deletes_in_reverse_creation_order() -> None:
     assert cloudwatch_at < iam_at < secret_at < ecr_at < logs_at
     assert sqs_at > logs_at
     assert s3_at > logs_at
-    assert all(record.status == "destroyed" for record in manifest.resources.values())
-
-
-def test_rollback_deletes_cicd_resources() -> None:
-    events: list[tuple[str, str]] = []
-    ctx = FakeOrchestratorContext(
-        config=_config(),
-        clients={
-            "codecommit": FakeClient("codecommit", events),
-            "codebuild": FakeClient("codebuild", events),
-            "codepipeline": FakeClient("codepipeline", events),
-            "events": FakeClient("events", events),
-            "iam": FakeClient("iam", events, responses={"list_role_policies": {"PolicyNames": []}}),
-            "s3": FakeClient("s3", events, paginators={"list_object_versions": []}),
-        },
-    )
-    manifest = DeploymentManifest(
-        resource_prefix="integrity-review-beta",
-        config_hash="deadbeef",
-        resources={
-            "source_repository": _record("codecommit.repository", "integrity-review-beta-source"),
-            "build_project": _record("codebuild.project", "integrity-review-beta-build"),
-            "deploy_project": _record("codebuild.project", "integrity-review-beta-deploy"),
-            "pipeline": _record("codepipeline.pipeline", "integrity-review-beta-pipeline"),
-            "pipeline_trigger_rule": _record("events.rule", "integrity-review-beta-pipeline-trigger"),
-            "codebuild_role": _record("iam.role", "integrity-review-beta-codebuild"),
-            "pipeline_artifact_bucket": _record("s3.bucket", "integrity-review-beta-pipeline-artifacts"),
-        },
-    )
-
-    orchestrator._rollback(ctx, manifest, created_this_run=set(manifest.resources))
-
-    assert ("codecommit", "delete_repository") in events
-    assert ("codebuild", "delete_project") in events
-    assert ("codepipeline", "delete_pipeline") in events
-    assert ("events", "remove_targets") in events
-    assert ("events", "delete_rule") in events
-    events_remove_at = events.index(("events", "remove_targets"))
-    events_delete_at = events.index(("events", "delete_rule"))
-    assert events_remove_at < events_delete_at
     assert all(record.status == "destroyed" for record in manifest.resources.values())
 
 

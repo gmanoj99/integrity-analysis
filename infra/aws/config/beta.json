@@ -9,9 +9,6 @@
   "organization_id": "local",
   "storage_bucket_name": "nxtwave-assessments-backend-nxtwave-media-static",
   "storage_kms_key_arn": null,
-  "image_publisher_trusted_principal_arns": [
-    "arn:aws:iam::934167421030:role/integrity-review-beta-codebuild"
-  ],
   "network": {
     "vpc_cidr_block": "10.91.0.0/16",
     "public_subnet_cidrs": ["10.91.0.0/24", "10.91.1.0/24"],

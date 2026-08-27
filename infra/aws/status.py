@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError
 from .config import ALLOWED_ENVIRONMENTS
 from .orchestrator import OrchestratorContext, resource_names
 from .state_store import StateStore, config_hash
-from .utils import codepipeline_utils, iam_utils
+from .utils import iam_utils
 
 
 def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
@@ -86,15 +86,6 @@ def _check_ecs_service(ctx: OrchestratorContext, names: dict[str, str]) -> dict[
     )
 
 
-def _check_pipeline(ctx: OrchestratorContext, names: dict[str, str]) -> dict[str, Any]:
-    codepipeline = ctx.client("codepipeline")
-    if not codepipeline_utils.pipeline_exists(codepipeline, names["pipeline"]):
-        return _check("codepipeline.pipeline", False, "pipeline not found")
-    status = codepipeline_utils.latest_execution_status(codepipeline, names["pipeline"])
-    ok = status in {None, "Succeeded", "InProgress"}
-    return _check("codepipeline.pipeline", ok, f"latest_execution_status={status}")
-
-
 def _check_task_role_least_privilege(ctx: OrchestratorContext, manifest_task_role_arn: str) -> dict[str, Any]:
     iam = ctx.client("iam")
     denied_actions = ["secretsmanager:GetSecretValue", "iam:CreateRole", "kms:ScheduleKeyDeletion"]
@@ -113,7 +104,6 @@ def run_status_checks(ctx: OrchestratorContext, *, deep: bool) -> dict[str, Any]
         checks.append(_check_storage_bucket(ctx))
         checks.extend(_check_queues(ctx, names))
         checks.append(_check_ecs_service(ctx, names))
-        checks.append(_check_pipeline(ctx, names))
 
         state_store = StateStore(
             s3_client=ctx.client("s3"),

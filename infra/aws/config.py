@@ -62,7 +62,6 @@ class EnvironmentConfig:
     organization_id: str
     storage_bucket_name: str
     storage_kms_key_arn: str | None
-    image_publisher_trusted_principal_arns: tuple[str, ...]
     network: NetworkConfig
     sizing: SizingConfig
     retention: RetentionConfig
@@ -158,9 +157,6 @@ def load_environment_config(
         organization_id=raw.get("organization_id", "local"),
         storage_bucket_name=_require(raw, "storage_bucket_name"),
         storage_kms_key_arn=raw.get("storage_kms_key_arn"),
-        image_publisher_trusted_principal_arns=tuple(
-            raw.get("image_publisher_trusted_principal_arns", ())
-        ),
         network=_build_network(_require(raw, "network")),
         sizing=_build_sizing(_require(raw, "sizing")),
         retention=_build_retention(_require(raw, "retention")),

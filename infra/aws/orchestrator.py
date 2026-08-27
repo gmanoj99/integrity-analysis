@@ -17,36 +17,19 @@ import boto3
 
 from .config import EnvironmentConfig
 from .policies import (
-    assume_role_trust_policy,
-    codebuild_build_role_policy,
-    codebuild_deploy_role_policy,
-    codebuild_trust_policy,
-    codepipeline_service_role_policy,
-    codepipeline_trust_policy,
     ecs_task_execution_role_policy,
     ecs_task_kms_policy,
     ecs_task_protection_policy,
     ecs_task_s3_policy,
     ecs_task_sqs_policy,
     ecs_task_trust_policy,
-    events_trust_policy,
-    image_publisher_policy,
-    infrastructure_provisioner_policy,
-    pipeline_trigger_events_policy,
 )
 from .session import client as make_client
 from .specs import (
     AlarmSpec,
     BucketSpec,
     ClusterSpec,
-    CodeBuildProjectSpec,
-    CodeCommitRepositorySpec,
-    CodePipelineArtifactStoreSpec,
-    CodePipelineBuildStageSpec,
-    CodePipelineSourceStageSpec,
-    CodePipelineSpec,
     ContainerSpec,
-    EventBridgeRuleSpec,
     InternetGatewaySpec,
     KmsKeySpec,
     NatGatewaySpec,
@@ -70,13 +53,9 @@ from .state_store import DeploymentManifest, ResourceRecord, StateStore, config_
 from .utils import (
     autoscaling_utils,
     cloudwatch_utils,
-    codebuild_utils,
-    codecommit_utils,
-    codepipeline_utils,
     ec2_utils,
     ecr_utils,
     ecs_utils,
-    events_utils,
     iam_utils,
     kms_utils,
     logs_utils,
@@ -88,8 +67,6 @@ from .utils import (
 _LOGGER = logging.getLogger("infra.aws.orchestrator")
 _ECS_SERVICE_NAMESPACE = "ecs"
 _ECS_SCALABLE_DIMENSION = "ecs:service:DesiredCount"
-_PIPELINE_SOURCE_BRANCH = "main"
-_PIPELINE_TRIGGER_TARGET_ID_SUFFIX = "-target"
 _STEP_ORDER = [
     "network",
     "kms",
@@ -99,7 +76,6 @@ _STEP_ORDER = [
     "secret",
     "roles",
     "compute",
-    "cicd",
     "alarms",
     "autoscaling",
 ]
@@ -142,22 +118,9 @@ def resource_names(config: EnvironmentConfig) -> dict[str, str]:
         "gemini_secret": f"{prefix}/gemini-api-key",
         "execution_role": f"{prefix}-ecs-execution",
         "task_role": f"{prefix}-ecs-task",
-        "image_publisher_role": f"{prefix}-image-publisher",
         "cluster": f"{prefix}-cluster",
         "task_family": f"{prefix}-worker",
         "service": f"{prefix}-worker-service",
-        "source_repository": f"{prefix}-source",
-        "pipeline_artifact_bucket": f"{prefix}-pipeline-artifacts-{config.account_id}",
-        "build_log_group": f"/aws/codebuild/{prefix}-build",
-        "deploy_log_group": f"/aws/codebuild/{prefix}-deploy",
-        "codebuild_role": f"{prefix}-codebuild",
-        "deploy_role": f"{prefix}-deploy-runner",
-        "build_project": f"{prefix}-build",
-        "deploy_project": f"{prefix}-deploy",
-        "codepipeline_role": f"{prefix}-codepipeline",
-        "pipeline": f"{prefix}-pipeline",
-        "events_role": f"{prefix}-pipeline-trigger",
-        "pipeline_trigger_rule": f"{prefix}-pipeline-trigger",
     }
 
 
@@ -451,22 +414,6 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
     )
     _record(manifest, "task_role", resource_type="iam.role", identifier=names["task_role"], arn=task_role_arn)
 
-    image_publisher_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["image_publisher_role"],
-            assume_role_trust_policy(
-                trusted_principal_arns=list(ctx.config.image_publisher_trusted_principal_arns)
-            ),
-            "Image publisher role: push images only, no application data access",
-            {"ecr_push": image_publisher_policy(repository_arn=ecr_repo_arn)},
-        ),
-        tags,
-    )
-    _record(
-        manifest, "image_publisher_role", resource_type="iam.role", identifier=names["image_publisher_role"], arn=image_publisher_arn
-    )
-
 
 def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> dict[str, str]:
     sizing = ctx.config.sizing
@@ -538,256 +485,6 @@ def _ensure_compute(ctx: OrchestratorContext, manifest: DeploymentManifest, name
         tags,
     )
     _record(manifest, "service", resource_type="ecs.service", identifier=names["service"], arn=service_arn)
-
-
-def _role_arn(ctx: OrchestratorContext, role_name: str) -> str:
-    return f"arn:aws:iam::{ctx.config.account_id}:role/{role_name}"
-
-
-def _ensure_cicd(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
-    """CodeCommit source -> CodeBuild build+push -> CodeBuild deploy, triggered on push.
-
-    Fully automated: an EventBridge rule (not CodePipeline polling) starts the
-    pipeline on every push to ``_PIPELINE_SOURCE_BRANCH``, and the deploy
-    project runs this repo's own provisioner (``infra.aws.cli apply``) rather
-    than a bespoke ECS deploy step. Idempotent: re-running ``apply`` safely
-    reconciles this step's own resources too (there is no manual-approval gate
-    for this environment).
-    """
-
-    logs = ctx.client("logs")
-    s3 = ctx.client("s3")
-    codecommit = ctx.client("codecommit")
-    iam = ctx.client("iam")
-    codebuild = ctx.client("codebuild")
-    codepipeline = ctx.client("codepipeline")
-    events = ctx.client("events")
-    tags = ctx.config.resolved_tags()
-    account_id = ctx.config.account_id
-    region = ctx.config.region
-    data_kms_arn = manifest.resources["kms_data"].arn
-    logs_kms_arn = manifest.resources["kms_logs"].arn
-
-    codebuild_role_arn = _role_arn(ctx, names["codebuild_role"])
-    deploy_role_arn = _role_arn(ctx, names["deploy_role"])
-    codepipeline_role_arn = _role_arn(ctx, names["codepipeline_role"])
-    events_role_arn = _role_arn(ctx, names["events_role"])
-    pipeline_arn = f"arn:aws:codepipeline:{region}:{account_id}:{names['pipeline']}"
-
-    build_log_group_arn = logs_utils.ensure_log_group(
-        logs, LogGroupSpec(names["build_log_group"], logs_kms_arn, ctx.config.retention.log_retention_days)
-    )
-    deploy_log_group_arn = logs_utils.ensure_log_group(
-        logs, LogGroupSpec(names["deploy_log_group"], logs_kms_arn, ctx.config.retention.log_retention_days)
-    )
-    _record(manifest, "build_log_group", resource_type="logs.log_group", identifier=names["build_log_group"], arn=build_log_group_arn)
-    _record(manifest, "deploy_log_group", resource_type="logs.log_group", identifier=names["deploy_log_group"], arn=deploy_log_group_arn)
-
-    artifact_bucket_arn = s3_utils.ensure_bucket(
-        s3,
-        BucketSpec(
-            names["pipeline_artifact_bucket"],
-            region,
-            data_kms_arn,
-            ctx.config.retention.bucket_expiration_days,
-            (codebuild_role_arn, deploy_role_arn, codepipeline_role_arn),
-        ),
-        tags,
-    )
-    _record(manifest, "pipeline_artifact_bucket", resource_type="s3.bucket", identifier=names["pipeline_artifact_bucket"], arn=artifact_bucket_arn)
-
-    source_repository_arn = codecommit_utils.ensure_repository(
-        codecommit,
-        CodeCommitRepositorySpec(
-            names["source_repository"],
-            "Integrity review beta worker: image source + provisioner config",
-            _PIPELINE_SOURCE_BRANCH,
-        ),
-        tags,
-    )
-    _record(manifest, "source_repository", resource_type="codecommit.repository", identifier=names["source_repository"], arn=source_repository_arn)
-
-    ecr_repo_arn = manifest.resources["ecr_repository"].arn
-    codebuild_role_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["codebuild_role"],
-            codebuild_trust_policy(),
-            "CodeBuild: builds and pushes the worker image to ECR",
-            {
-                "build": codebuild_build_role_policy(
-                    repository_arn=ecr_repo_arn,
-                    log_group_arn=build_log_group_arn,
-                    artifact_bucket_arn=artifact_bucket_arn,
-                    kms_key_arn=data_kms_arn,
-                    source_repository_arn=source_repository_arn,
-                )
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "codebuild_role", resource_type="iam.role", identifier=names["codebuild_role"], arn=codebuild_role_arn)
-
-    deploy_role_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["deploy_role"],
-            codebuild_trust_policy(),
-            "CodeBuild: runs the provisioner (cli apply) against the new image tag",
-            {
-                "deploy": codebuild_deploy_role_policy(
-                    log_group_arn=deploy_log_group_arn,
-                    artifact_bucket_arn=artifact_bucket_arn,
-                    kms_key_arn=data_kms_arn,
-                ),
-                "provisioner": infrastructure_provisioner_policy(
-                    resource_prefix=ctx.config.resource_prefix,
-                    region=region,
-                    account_id=account_id,
-                    execution_role_arn=manifest.resources["execution_role"].arn,
-                    task_role_arn=manifest.resources["task_role"].arn,
-                    image_publisher_role_arn=manifest.resources["image_publisher_role"].arn,
-                    cicd_role_arns=(
-                        codebuild_role_arn,
-                        deploy_role_arn,
-                        codepipeline_role_arn,
-                        events_role_arn,
-                    ),
-                ),
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "deploy_role", resource_type="iam.role", identifier=names["deploy_role"], arn=deploy_role_arn)
-
-    build_project_arn = codebuild_utils.ensure_project(
-        codebuild,
-        CodeBuildProjectSpec(
-            name=names["build_project"],
-            description="Build and push the worker image to ECR",
-            service_role_arn=codebuild_role_arn,
-            buildspec_path="infra/aws/cicd/buildspec.build.yml",
-            image="aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-            compute_type="BUILD_GENERAL1_MEDIUM",
-            privileged_mode=True,
-            log_group_name=names["build_log_group"],
-            environment_variables={
-                "AWS_ACCOUNT_ID": account_id,
-                "AWS_REGION": region,
-                "ECR_REPOSITORY_NAME": names["ecr_repository"],
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "build_project", resource_type="codebuild.project", identifier=names["build_project"], arn=build_project_arn)
-
-    deploy_project_arn = codebuild_utils.ensure_project(
-        codebuild,
-        CodeBuildProjectSpec(
-            name=names["deploy_project"],
-            description="Run infra.aws.cli apply with the freshly built image tag",
-            service_role_arn=deploy_role_arn,
-            buildspec_path="infra/aws/cicd/buildspec.deploy.yml",
-            image="aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-            compute_type="BUILD_GENERAL1_SMALL",
-            privileged_mode=False,
-            log_group_name=names["deploy_log_group"],
-            environment_variables={
-                "AWS_ACCOUNT_ID": account_id,
-                "AWS_REGION": region,
-                "INFRA_CONFIG_PATH": f"infra/aws/config/{ctx.config.environment}.json",
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "deploy_project", resource_type="codebuild.project", identifier=names["deploy_project"], arn=deploy_project_arn)
-
-    codepipeline_role_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["codepipeline_role"],
-            codepipeline_trust_policy(),
-            "CodePipeline: orchestrates source -> build -> deploy for the worker image",
-            {
-                "pipeline": codepipeline_service_role_policy(
-                    source_repository_arn=source_repository_arn,
-                    artifact_bucket_arn=artifact_bucket_arn,
-                    kms_key_arn=data_kms_arn,
-                    build_project_arns=[build_project_arn, deploy_project_arn],
-                )
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "codepipeline_role", resource_type="iam.role", identifier=names["codepipeline_role"], arn=codepipeline_role_arn)
-
-    pipeline_arn = codepipeline_utils.ensure_pipeline(
-        codepipeline,
-        CodePipelineSpec(
-            name=names["pipeline"],
-            service_role_arn=codepipeline_role_arn,
-            artifact_store=CodePipelineArtifactStoreSpec(
-                bucket_name=names["pipeline_artifact_bucket"], kms_key_arn=data_kms_arn
-            ),
-            source=CodePipelineSourceStageSpec(
-                repository_name=names["source_repository"],
-                branch_name=_PIPELINE_SOURCE_BRANCH,
-                output_artifact_name="SourceOutput",
-            ),
-            build_stages=(
-                CodePipelineBuildStageSpec(
-                    name="Build",
-                    project_name=names["build_project"],
-                    input_artifact_name="SourceOutput",
-                    output_artifact_name="BuildOutput",
-                ),
-                CodePipelineBuildStageSpec(
-                    name="Deploy",
-                    project_name=names["deploy_project"],
-                    input_artifact_name="BuildOutput",
-                    output_artifact_name=None,
-                ),
-            ),
-        ),
-        tags,
-    )
-    _record(manifest, "pipeline", resource_type="codepipeline.pipeline", identifier=names["pipeline"], arn=pipeline_arn)
-
-    events_role_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["events_role"],
-            events_trust_policy(),
-            "EventBridge: starts the pipeline on every push to the source repository",
-            {"trigger": pipeline_trigger_events_policy(pipeline_arn=pipeline_arn)},
-        ),
-        tags,
-    )
-    _record(manifest, "events_role", resource_type="iam.role", identifier=names["events_role"], arn=events_role_arn)
-
-    target_id = f"{names['pipeline_trigger_rule']}{_PIPELINE_TRIGGER_TARGET_ID_SUFFIX}"
-    rule_arn = events_utils.ensure_rule(
-        events,
-        EventBridgeRuleSpec(
-            name=names["pipeline_trigger_rule"],
-            description=f"Starts {names['pipeline']} on push to {_PIPELINE_SOURCE_BRANCH}",
-            event_pattern={
-                "source": ["aws.codecommit"],
-                "detail-type": ["CodeCommit Repository State Change"],
-                "resources": [source_repository_arn],
-                "detail": {
-                    "event": ["referenceCreated", "referenceUpdated"],
-                    "referenceType": ["branch"],
-                    "referenceName": [_PIPELINE_SOURCE_BRANCH],
-                },
-            },
-            target_arn=pipeline_arn,
-            target_role_arn=events_role_arn,
-            target_id=target_id,
-        ),
-        tags,
-    )
-    _record(manifest, "pipeline_trigger_rule", resource_type="events.rule", identifier=names["pipeline_trigger_rule"], arn=rule_arn)
 
 
 def _alarm_specs(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> list[AlarmSpec]:
@@ -981,7 +678,6 @@ _STEPS: dict[str, Callable[[OrchestratorContext, DeploymentManifest, dict[str, s
     "secret": _ensure_secret,
     "roles": _ensure_roles,
     "compute": _ensure_compute,
-    "cicd": _ensure_cicd,
     "alarms": _ensure_alarms,
     "autoscaling": _ensure_autoscaling,
 }
@@ -1080,11 +776,8 @@ _STEP_ORDER_INDEX = {
     "kms_data": 1, "kms_secrets": 1, "kms_logs": 1,
     "request_dlq": 2, "result_dlq": 2, "request_queue": 2, "result_queue": 2,
     "log_group": 3, "ecr_repository": 4, "gemini_secret": 5,
-    "execution_role": 6, "task_role": 6, "image_publisher_role": 6,
+    "execution_role": 6, "task_role": 6,
     "cluster": 7, "task_definition": 7, "service": 7,
-    "build_log_group": 8, "deploy_log_group": 8, "pipeline_artifact_bucket": 8, "source_repository": 8,
-    "codebuild_role": 8, "deploy_role": 8, "build_project": 8, "deploy_project": 8,
-    "codepipeline_role": 8, "pipeline": 8, "events_role": 8, "pipeline_trigger_rule": 8,
     "alarm": 9,
     "scalable_target": 10, "scaling_policy": 11,
 }
@@ -1133,17 +826,6 @@ def _delete_resource(ctx: OrchestratorContext, record: ResourceRecord) -> None:
         _delete_role(ctx.client("iam"), record.identifier)
     elif record.resource_type == "cloudwatch.alarm":
         ctx.client("cloudwatch").delete_alarms(AlarmNames=[record.identifier])
-    elif record.resource_type == "codepipeline.pipeline":
-        ctx.client("codepipeline").delete_pipeline(name=record.identifier)
-    elif record.resource_type == "codebuild.project":
-        ctx.client("codebuild").delete_project(name=record.identifier)
-    elif record.resource_type == "codecommit.repository":
-        ctx.client("codecommit").delete_repository(repositoryName=record.identifier)
-    elif record.resource_type == "events.rule":
-        events = ctx.client("events")
-        target_id = f"{record.identifier}{_PIPELINE_TRIGGER_TARGET_ID_SUFFIX}"
-        events.remove_targets(Rule=record.identifier, Ids=[target_id])
-        events.delete_rule(Name=record.identifier)
     # KMS keys and VPC networking are deliberately not force-deleted here:
     # keys are scheduled for deletion (7-day minimum) and network teardown
     # requires strict dependency ordering handled by `destroy()` directly.

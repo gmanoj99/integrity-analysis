@@ -33,45 +33,6 @@ def _document(statements: list[dict[str, Any]]) -> dict[str, Any]:
     return {"Version": "2012-10-17", "Statement": statements}
 
 
-def codebuild_trust_policy() -> dict[str, Any]:
-    return _document(
-        [
-            {
-                "Sid": "AllowCodeBuildAssume",
-                "Effect": "Allow",
-                "Principal": {"Service": "codebuild.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-            }
-        ]
-    )
-
-
-def codepipeline_trust_policy() -> dict[str, Any]:
-    return _document(
-        [
-            {
-                "Sid": "AllowCodePipelineAssume",
-                "Effect": "Allow",
-                "Principal": {"Service": "codepipeline.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-            }
-        ]
-    )
-
-
-def events_trust_policy() -> dict[str, Any]:
-    return _document(
-        [
-            {
-                "Sid": "AllowEventsAssume",
-                "Effect": "Allow",
-                "Principal": {"Service": "events.amazonaws.com"},
-                "Action": "sts:AssumeRole",
-            }
-        ]
-    )
-
-
 def ecs_task_trust_policy() -> dict[str, Any]:
     return _document(
         [
@@ -79,21 +40,6 @@ def ecs_task_trust_policy() -> dict[str, Any]:
                 "Sid": "AllowEcsTasksAssume",
                 "Effect": "Allow",
                 "Principal": {"Service": ECS_TASKS_PRINCIPAL},
-                "Action": "sts:AssumeRole",
-            }
-        ]
-    )
-
-
-def assume_role_trust_policy(*, trusted_principal_arns: list[str]) -> dict[str, Any]:
-    """Trust policy for a role assumed directly by named IAM principals (not a service)."""
-
-    return _document(
-        [
-            {
-                "Sid": "AllowNamedPrincipalsAssume",
-                "Effect": "Allow",
-                "Principal": {"AWS": trusted_principal_arns},
                 "Action": "sts:AssumeRole",
             }
         ]
@@ -248,8 +194,6 @@ def infrastructure_provisioner_policy(
     account_id: str,
     execution_role_arn: str,
     task_role_arn: str,
-    image_publisher_role_arn: str,
-    cicd_role_arns: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     statements = [
         _statement(
@@ -279,6 +223,9 @@ def infrastructure_provisioner_policy(
                 "ec2:AuthorizeSecurityGroupEgress",
                 "ec2:RevokeSecurityGroupEgress",
                 "ec2:CreateVpcEndpoint",
+                # ECR authorization tokens are account-level, not repo-scoped;
+                # this same role also runs `docker login`/push for the worker image.
+                "ecr:GetAuthorizationToken",
                 # KMS keys are UUID ARNs, never name-scopable to resource_prefix.
                 # Decrypt/GenerateDataKey are also needed here for the state
                 # manifest (SSE-KMS S3 object) on every apply/destroy/status call.
@@ -343,35 +290,6 @@ def infrastructure_provisioner_policy(
                 "cloudwatch:DeleteAlarms",
                 # PutMetricAlarm with Tags also checks cloudwatch:TagResource.
                 "cloudwatch:TagResource",
-                # CI/CD resources (CodeCommit source, CodeBuild build/deploy
-                # projects, CodePipeline, the EventBridge trigger rule): all
-                # created with a name derived from resource_prefix, so they
-                # fit the same tagged-resource wildcard as everything else.
-                "codecommit:CreateRepository",
-                "codecommit:DeleteRepository",
-                "codecommit:GetRepository",
-                "codecommit:TagResource",
-                "codecommit:GitPull",
-                "codecommit:GitPush",
-                "codebuild:CreateProject",
-                "codebuild:UpdateProject",
-                "codebuild:DeleteProject",
-                "codebuild:BatchGetProjects",
-                "codebuild:StartBuild",
-                "codebuild:BatchGetBuilds",
-                "codepipeline:CreatePipeline",
-                "codepipeline:UpdatePipeline",
-                "codepipeline:DeletePipeline",
-                "codepipeline:GetPipeline",
-                "codepipeline:GetPipelineState",
-                "codepipeline:StartPipelineExecution",
-                "codepipeline:TagResource",
-                "events:PutRule",
-                "events:PutTargets",
-                "events:RemoveTargets",
-                "events:DeleteRule",
-                "events:DescribeRule",
-                "events:ListTargetsByRule",
             ],
             resources=[f"arn:aws:*:*:*:*{resource_prefix}*"],
         ),
@@ -408,186 +326,10 @@ def infrastructure_provisioner_policy(
             },
         ),
         _statement(
-            sid="AllowAssumeImagePublisher",
-            actions=["sts:AssumeRole"],
-            resources=[image_publisher_role_arn],
-        ),
-        _statement(
             sid="AllowCallerIdentityGuard", actions=["sts:GetCallerIdentity"], resources=["*"]
         ),
     ]
-    if cicd_role_arns:
-        statements.append(
-            _statement(
-                sid="AllowPassCiCdRoles",
-                actions=["iam:PassRole"],
-                resources=list(cicd_role_arns),
-                condition={
-                    "StringEquals": {
-                        "iam:PassedToService": [
-                            "codebuild.amazonaws.com",
-                            "codepipeline.amazonaws.com",
-                            "events.amazonaws.com",
-                        ]
-                    }
-                },
-            )
-        )
     return _document(statements)
-
-
-def codebuild_build_role_policy(
-    *,
-    repository_arn: str,
-    log_group_arn: str,
-    artifact_bucket_arn: str,
-    kms_key_arn: str,
-    source_repository_arn: str,
-) -> dict[str, Any]:
-    """Permissions for the CodeBuild project that builds and pushes the worker image."""
-
-    return _document(
-        [
-            _statement(
-                sid="AllowLogDelivery",
-                actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-                resources=[f"{log_group_arn}:*"],
-            ),
-            _statement(sid="AllowEcrAuth", actions=["ecr:GetAuthorizationToken"], resources=["*"]),
-            _statement(
-                sid="AllowEcrPush",
-                actions=[
-                    "ecr:BatchCheckLayerAvailability",
-                    "ecr:InitiateLayerUpload",
-                    "ecr:UploadLayerPart",
-                    "ecr:CompleteLayerUpload",
-                    "ecr:PutImage",
-                    "ecr:BatchGetImage",
-                    "ecr:GetDownloadUrlForLayer",
-                ],
-                resources=[repository_arn],
-            ),
-            _statement(
-                sid="AllowArtifactBucketAccess",
-                actions=["s3:GetObject", "s3:PutObject", "s3:GetBucketLocation"],
-                resources=[artifact_bucket_arn, f"{artifact_bucket_arn}/*"],
-            ),
-            _statement(
-                sid="AllowArtifactKmsUse",
-                actions=["kms:Decrypt", "kms:GenerateDataKey"],
-                resources=[kms_key_arn],
-            ),
-            _statement(
-                sid="AllowSourceGitPull", actions=["codecommit:GitPull"], resources=[source_repository_arn]
-            ),
-        ]
-    )
-
-
-def codebuild_deploy_role_policy(
-    *, log_group_arn: str, artifact_bucket_arn: str, kms_key_arn: str
-) -> dict[str, Any]:
-    """Extra permissions (beyond ``infrastructure_provisioner_policy``) for the deploy project.
-
-    The deploy project's *provisioner* permissions (creating/updating the ECS
-    service, IAM roles, etc.) come from a separate ``infrastructure_provisioner_policy``
-    inline policy on the same role; this only covers what running inside
-    CodeBuild additionally needs (its own logs, reading the build artifact).
-    """
-
-    return _document(
-        [
-            _statement(
-                sid="AllowLogDelivery",
-                actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-                resources=[f"{log_group_arn}:*"],
-            ),
-            _statement(
-                sid="AllowArtifactBucketRead",
-                actions=["s3:GetObject", "s3:GetBucketLocation"],
-                resources=[artifact_bucket_arn, f"{artifact_bucket_arn}/*"],
-            ),
-            _statement(
-                sid="AllowArtifactKmsDecrypt", actions=["kms:Decrypt"], resources=[kms_key_arn]
-            ),
-        ]
-    )
-
-
-def codepipeline_service_role_policy(
-    *,
-    source_repository_arn: str,
-    artifact_bucket_arn: str,
-    kms_key_arn: str,
-    build_project_arns: list[str],
-) -> dict[str, Any]:
-    return _document(
-        [
-            _statement(
-                sid="AllowSourceRead",
-                actions=[
-                    "codecommit:GetBranch",
-                    "codecommit:GetCommit",
-                    "codecommit:UploadArchive",
-                    "codecommit:GetUploadArchiveStatus",
-                    "codecommit:CancelUploadArchive",
-                ],
-                resources=[source_repository_arn],
-            ),
-            _statement(
-                sid="AllowArtifactBucketAccess",
-                actions=["s3:GetObject", "s3:PutObject", "s3:GetBucketVersioning"],
-                resources=[artifact_bucket_arn, f"{artifact_bucket_arn}/*"],
-            ),
-            _statement(
-                sid="AllowArtifactKmsUse",
-                actions=["kms:Decrypt", "kms:GenerateDataKey"],
-                resources=[kms_key_arn],
-            ),
-            _statement(
-                sid="AllowInvokeCodeBuild",
-                actions=["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
-                resources=build_project_arns,
-            ),
-        ]
-    )
-
-
-def pipeline_trigger_events_policy(*, pipeline_arn: str) -> dict[str, Any]:
-    """Permissions for the EventBridge rule role that starts the pipeline on push."""
-
-    return _document(
-        [
-            _statement(
-                sid="AllowStartPipelineExecution",
-                actions=["codepipeline:StartPipelineExecution"],
-                resources=[pipeline_arn],
-            )
-        ]
-    )
-
-
-def image_publisher_policy(*, repository_arn: str) -> dict[str, Any]:
-    return _document(
-        [
-            _statement(
-                sid="AllowEcrAuth", actions=["ecr:GetAuthorizationToken"], resources=["*"]
-            ),
-            _statement(
-                sid="AllowEcrPush",
-                actions=[
-                    "ecr:BatchCheckLayerAvailability",
-                    "ecr:PutImage",
-                    "ecr:InitiateLayerUpload",
-                    "ecr:UploadLayerPart",
-                    "ecr:CompleteLayerUpload",
-                    "ecr:DescribeImageScanFindings",
-                    "ecr:DescribeImages",
-                ],
-                resources=[repository_arn],
-            ),
-        ]
-    )
 
 
 def s3_tls_only_and_public_deny_policy(

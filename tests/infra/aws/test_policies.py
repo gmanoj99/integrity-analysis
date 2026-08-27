@@ -84,7 +84,6 @@ def _provisioner_policy() -> dict:
         account_id="111111111111",
         execution_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",
         task_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",
-        image_publisher_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-image-publisher",
     )
 
 
@@ -108,56 +107,14 @@ def test_provisioner_policy_has_no_dynamodb() -> None:
     assert not any(action.startswith("dynamodb:") for action in all_actions)
 
 
-def test_provisioner_policy_scopes_cicd_actions_to_tagged_resources() -> None:
+def test_provisioner_policy_grants_ecr_authorization_token_for_docker_login() -> None:
     document = _provisioner_policy()
 
-    tagged_statement = next(
-        s for s in document["Statement"] if s["Sid"] == "AllowManageTaggedTestResources"
+    unscopable_statement = next(
+        s for s in document["Statement"] if s["Sid"] == "AllowUnscopableActions"
     )
-    for action in (
-        "codecommit:CreateRepository",
-        "codecommit:GitPull",
-        "codebuild:CreateProject",
-        "codebuild:StartBuild",
-        "codepipeline:CreatePipeline",
-        "codepipeline:StartPipelineExecution",
-        "events:PutRule",
-        "events:PutTargets",
-    ):
-        assert action in tagged_statement["Action"]
-    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-beta*"]
-
-
-def test_provisioner_policy_omits_pass_cicd_roles_statement_when_no_roles_given() -> None:
-    document = _provisioner_policy()
-
-    assert not any(s["Sid"] == "AllowPassCiCdRoles" for s in document["Statement"])
-
-
-def test_provisioner_policy_scopes_pass_role_to_cicd_roles_when_provided() -> None:
-    document = policies.infrastructure_provisioner_policy(
-        resource_prefix="integrity-review-beta",
-        region="ap-south-1",
-        account_id="111111111111",
-        execution_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",
-        task_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",
-        image_publisher_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-image-publisher",
-        cicd_role_arns=(
-            "arn:aws:iam::111111111111:role/integrity-review-beta-codebuild",
-            "arn:aws:iam::111111111111:role/integrity-review-beta-deploy-runner",
-        ),
-    )
-
-    statement = next(s for s in document["Statement"] if s["Sid"] == "AllowPassCiCdRoles")
-    assert set(statement["Resource"]) == {
-        "arn:aws:iam::111111111111:role/integrity-review-beta-codebuild",
-        "arn:aws:iam::111111111111:role/integrity-review-beta-deploy-runner",
-    }
-    assert set(statement["Condition"]["StringEquals"]["iam:PassedToService"]) == {
-        "codebuild.amazonaws.com",
-        "codepipeline.amazonaws.com",
-        "events.amazonaws.com",
-    }
+    assert "ecr:GetAuthorizationToken" in unscopable_statement["Action"]
+    assert unscopable_statement["Resource"] == ["*"]
 
 
 def test_provisioner_policy_grants_application_autoscaling_for_sqs_driven_scaling() -> None:
@@ -233,7 +190,7 @@ def test_provisioner_policy_excludes_ec2_network_deletes() -> None:
     assert "ec2:AllocateAddress" in all_actions
 
 
-def test_provisioner_policy_scopes_ecr_to_tagged_resources_and_grants_assume_role() -> None:
+def test_provisioner_policy_scopes_ecr_to_tagged_resources() -> None:
     document = _provisioner_policy()
 
     tagged_statement = next(
@@ -241,30 +198,6 @@ def test_provisioner_policy_scopes_ecr_to_tagged_resources_and_grants_assume_rol
     )
     assert "ecr:*" in tagged_statement["Action"]
     assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-beta*"]
-
-    assume_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowAssumeImagePublisher")
-    assert assume_statement["Action"] == ["sts:AssumeRole"]
-    assert assume_statement["Resource"] == [
-        "arn:aws:iam::111111111111:role/integrity-review-beta-image-publisher"
-    ]
-
-
-def test_assume_role_trust_policy_trusts_named_principals() -> None:
-    document = policies.assume_role_trust_policy(
-        trusted_principal_arns=["arn:aws:iam::111111111111:user/operator"]
-    )
-
-    statement = document["Statement"][0]
-    assert statement["Principal"] == {"AWS": ["arn:aws:iam::111111111111:user/operator"]}
-    assert statement["Action"] == "sts:AssumeRole"
-
-
-def test_image_publisher_policy_has_no_application_data_access() -> None:
-    document = policies.image_publisher_policy(repository_arn="arn:aws:ecr:ap-south-1:111111111111:repository/test-worker")
-
-    all_actions = [action for statement in document["Statement"] for action in statement["Action"]]
-    assert not any(action.startswith("s3:") for action in all_actions)
-    assert not any(action.startswith("secretsmanager:") for action in all_actions)
 
 
 def test_s3_tls_only_policy_denies_insecure_transport() -> None:
@@ -275,86 +208,6 @@ def test_s3_tls_only_policy_denies_insecure_transport() -> None:
     deny_statement = next(s for s in document["Statement"] if s["Sid"] == "DenyInsecureTransport")
     assert deny_statement["Effect"] == "Deny"
     assert deny_statement["Condition"] == {"Bool": {"aws:SecureTransport": "false"}}
-
-
-def test_codebuild_trust_policy_only_allows_codebuild() -> None:
-    document = policies.codebuild_trust_policy()
-
-    statement = document["Statement"][0]
-    assert statement["Principal"] == {"Service": "codebuild.amazonaws.com"}
-    assert statement["Action"] == "sts:AssumeRole"
-
-
-def test_codepipeline_trust_policy_only_allows_codepipeline() -> None:
-    document = policies.codepipeline_trust_policy()
-
-    statement = document["Statement"][0]
-    assert statement["Principal"] == {"Service": "codepipeline.amazonaws.com"}
-
-
-def test_events_trust_policy_only_allows_events() -> None:
-    document = policies.events_trust_policy()
-
-    statement = document["Statement"][0]
-    assert statement["Principal"] == {"Service": "events.amazonaws.com"}
-
-
-def test_codebuild_build_role_policy_scopes_ecr_push_and_source_pull() -> None:
-    document = policies.codebuild_build_role_policy(
-        repository_arn="arn:aws:ecr:ap-south-1:111111111111:repository/integrity-review-beta-worker",
-        log_group_arn="arn:aws:logs:ap-south-1:111111111111:log-group:/aws/codebuild/integrity-review-beta-build",
-        artifact_bucket_arn="arn:aws:s3:::integrity-review-beta-pipeline-artifacts-111111111111",
-        kms_key_arn="arn:aws:kms:ap-south-1:111111111111:key/abc",
-        source_repository_arn="arn:aws:codecommit:ap-south-1:111111111111:integrity-review-beta-source",
-    )
-
-    push_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowEcrPush")
-    assert push_statement["Resource"] == [
-        "arn:aws:ecr:ap-south-1:111111111111:repository/integrity-review-beta-worker"
-    ]
-    pull_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowSourceGitPull")
-    assert pull_statement["Action"] == ["codecommit:GitPull"]
-
-
-def test_codebuild_deploy_role_policy_has_no_ecr_or_codecommit_access() -> None:
-    document = policies.codebuild_deploy_role_policy(
-        log_group_arn="arn:aws:logs:ap-south-1:111111111111:log-group:/aws/codebuild/integrity-review-beta-deploy",
-        artifact_bucket_arn="arn:aws:s3:::integrity-review-beta-pipeline-artifacts-111111111111",
-        kms_key_arn="arn:aws:kms:ap-south-1:111111111111:key/abc",
-    )
-
-    all_actions = [action for statement in document["Statement"] for action in statement["Action"]]
-    assert not any(action.startswith("ecr:") for action in all_actions)
-    assert not any(action.startswith("codecommit:") for action in all_actions)
-    assert "s3:GetObject" in all_actions
-    assert "s3:PutObject" not in all_actions
-
-
-def test_codepipeline_service_role_policy_scopes_invoke_to_given_projects() -> None:
-    document = policies.codepipeline_service_role_policy(
-        source_repository_arn="arn:aws:codecommit:ap-south-1:111111111111:integrity-review-beta-source",
-        artifact_bucket_arn="arn:aws:s3:::integrity-review-beta-pipeline-artifacts-111111111111",
-        kms_key_arn="arn:aws:kms:ap-south-1:111111111111:key/abc",
-        build_project_arns=[
-            "arn:aws:codebuild:ap-south-1:111111111111:project/integrity-review-beta-build",
-            "arn:aws:codebuild:ap-south-1:111111111111:project/integrity-review-beta-deploy",
-        ],
-    )
-
-    invoke_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowInvokeCodeBuild")
-    assert len(invoke_statement["Resource"]) == 2
-
-
-def test_pipeline_trigger_events_policy_scopes_to_single_pipeline() -> None:
-    document = policies.pipeline_trigger_events_policy(
-        pipeline_arn="arn:aws:codepipeline:ap-south-1:111111111111:integrity-review-beta-pipeline"
-    )
-
-    statement = document["Statement"][0]
-    assert statement["Action"] == ["codepipeline:StartPipelineExecution"]
-    assert statement["Resource"] == [
-        "arn:aws:codepipeline:ap-south-1:111111111111:integrity-review-beta-pipeline"
-    ]
 
 
 def test_kms_key_policy_separates_admin_from_runtime_users() -> None:
