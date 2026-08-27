@@ -1,6 +1,6 @@
 version: 0.2
 
-# Runs entirely in KV's CodeBuild project (the provisioner role, which also
+# Runs entirely in admins CodeBuild project (the provisioner role, which also
 # carries infrastructure_provisioner_policy). Reconciles the beta stack via
 # this repo's own provisioner, then builds and pushes the worker image, then
 # re-applies so the ECS task definition/service point at the new image.
