@@ -1,7 +1,0 @@
-# Mirrors [project.dependencies] in pyproject.toml. Prefer `pip install -e .`
-# (or `.[test]` for the test suite) so the package metadata stays authoritative;
-# this file exists for container/CI layers that install from a lockfile-style list.
-boto3>=1.35.0
-google-genai>=1.33.0
-httpx>=0.28.1
-pydantic>=2.11.0,<3
