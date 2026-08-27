@@ -12,8 +12,8 @@ from infra.aws.utils import secrets_manager_utils
 
 from .aws_stub import stubbed_client
 
-SECRET_NAME = "integrity-review-ecs-test/gemini-api-key"
-SECRET_ARN = "arn:aws:secretsmanager:ap-south-1:111111111111:secret:integrity-review-ecs-test/gemini-api-key-abc123"
+SECRET_NAME = "integrity-review-beta/gemini-api-key"
+SECRET_ARN = "arn:aws:secretsmanager:ap-south-1:111111111111:secret:integrity-review-beta/gemini-api-key-abc123"
 
 
 def test_ensure_secret_creates_placeholder_when_missing() -> None:
@@ -22,7 +22,7 @@ def test_ensure_secret_creates_placeholder_when_missing() -> None:
         name=SECRET_NAME,
         kms_key_arn="arn:aws:kms:ap-south-1:111111111111:key/abcd",
         description="Gemini API key",
-        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-execution",),
+        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",),
     )
 
     stubber.add_client_error("describe_secret", service_error_code="ResourceNotFoundException", http_status_code=400)
@@ -42,7 +42,7 @@ def test_ensure_secret_is_idempotent_when_already_present() -> None:
         name=SECRET_NAME,
         kms_key_arn="arn:aws:kms:ap-south-1:111111111111:key/abcd",
         description="Gemini API key",
-        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-execution",),
+        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",),
     )
 
     stubber.add_response("describe_secret", {"ARN": SECRET_ARN, "Name": SECRET_NAME}, ANY)

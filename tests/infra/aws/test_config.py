@@ -20,13 +20,15 @@ _BASE_CONFIG = {
         "private_subnet_cidrs": ["10.90.10.0/24", "10.90.11.0/24"],
         "availability_zones": ["ap-south-1a", "ap-south-1b"],
     },
+    "storage_bucket_name": "nxtwave-assessments-backend-nxtwave-media-static",
     "sizing": {
         "task_cpu": "2048",
         "task_memory": "4096",
         "ephemeral_storage_gib": 20,
         "desired_count": 0,
-        "max_concurrent_reviews": 2,
+        "max_concurrent_reviews": 4,
         "gemini_task_limit": 24,
+        "gemini_per_review_limit": 12,
         "min_task_count": 0,
         "max_task_count": 2,
         "scale_in_idle_periods": 5,
@@ -42,7 +44,7 @@ _BASE_CONFIG = {
 
 def _write_config(tmp_path: Path, overrides: dict | None = None) -> Path:
     data = {**_BASE_CONFIG, **(overrides or {})}
-    config_path = tmp_path / "ecs-test.json"
+    config_path = tmp_path / "beta.json"
     config_path.write_text(json.dumps(data))
     return config_path
 
@@ -51,8 +53,8 @@ def test_loads_valid_config_with_defaults(tmp_path: Path) -> None:
     config = load_environment_config(_write_config(tmp_path))
 
     assert config.region == "ap-south-1"
-    assert config.environment == "ecs-test"
-    assert config.resource_prefix == "integrity-review-ecs-test"
+    assert config.environment == "beta"
+    assert config.resource_prefix == "integrity-review-beta"
     assert config.resolved_tags()["Owner"] == "platform-team"
 
 
@@ -67,6 +69,15 @@ def test_cli_overrides_take_precedence(tmp_path: Path) -> None:
 
 def test_rejects_unknown_environment(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path, {"environment": "staging"})
+
+    with pytest.raises(ConfigValidationError):
+        load_environment_config(config_path)
+
+
+def test_rejects_ecs_test_environment(tmp_path: Path) -> None:
+    """The repo is beta-only; the retired ecs-test environment must be rejected."""
+
+    config_path = _write_config(tmp_path, {"environment": "ecs-test", "stage": "ecs-test"})
 
     with pytest.raises(ConfigValidationError):
         load_environment_config(config_path)
@@ -100,7 +111,7 @@ def test_rejects_known_production_account(tmp_path: Path) -> None:
 def test_missing_required_field_raises(tmp_path: Path) -> None:
     data = dict(_BASE_CONFIG)
     del data["owner"]
-    config_path = tmp_path / "ecs-test.json"
+    config_path = tmp_path / "beta.json"
     config_path.write_text(json.dumps(data))
 
     with pytest.raises(ConfigValidationError):

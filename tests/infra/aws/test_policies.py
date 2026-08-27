@@ -38,16 +38,16 @@ def test_task_execution_policy_scopes_secret_and_ecr() -> None:
 
 def test_task_s3_policy_restricts_to_stage_prefixes() -> None:
     document = policies.ecs_task_s3_policy(
-        media_bucket_arn="arn:aws:s3:::media-bucket",
-        request_bucket_arn="arn:aws:s3:::request-bucket",
-        result_bucket_arn="arn:aws:s3:::result-bucket",
-        stage="ecs-test",
+        storage_bucket_arn="arn:aws:s3:::storage-bucket",
+        stage="beta",
     )
 
     request_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowRequestRead")
     assert request_statement["Resource"] == [
-        "arn:aws:s3:::request-bucket/ecs-test/media/ai_integrity_review_requests/*"
+        "arn:aws:s3:::storage-bucket/beta/media/ai_integrity_review_requests/*"
     ]
+    recording_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowRecordingRead")
+    assert recording_statement["Resource"] == ["arn:aws:s3:::storage-bucket/beta/media/*"]
     result_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowResultReadWrite")
     assert result_statement["Action"] == ["s3:GetObject", "s3:PutObject"]
     list_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowResultPrefixList")
@@ -79,12 +79,12 @@ def test_task_protection_policy_scopes_to_cluster() -> None:
 
 def _provisioner_policy() -> dict:
     return policies.infrastructure_provisioner_policy(
-        resource_prefix="integrity-review-ecs-test",
+        resource_prefix="integrity-review-beta",
         region="ap-south-1",
         account_id="111111111111",
-        execution_role_arn="arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-execution",
-        task_role_arn="arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-task",
-        image_publisher_role_arn="arn:aws:iam::111111111111:role/integrity-review-ecs-test-image-publisher",
+        execution_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",
+        task_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",
+        image_publisher_role_arn="arn:aws:iam::111111111111:role/integrity-review-beta-image-publisher",
     )
 
 
@@ -96,8 +96,8 @@ def test_provisioner_policy_scopes_pass_role_to_ecs_tasks() -> None:
         "StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}
     }
     assert set(pass_role_statement["Resource"]) == {
-        "arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-execution",
-        "arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-task",
+        "arn:aws:iam::111111111111:role/integrity-review-beta-ecs-execution",
+        "arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",
     }
 
 
@@ -125,7 +125,7 @@ def test_provisioner_policy_scopes_cicd_actions_to_tagged_resources() -> None:
         "events:PutTargets",
     ):
         assert action in tagged_statement["Action"]
-    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-ecs-test*"]
+    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-beta*"]
 
 
 def test_provisioner_policy_omits_pass_cicd_roles_statement_when_no_roles_given() -> None:
@@ -217,7 +217,7 @@ def test_provisioner_policy_has_no_wildcard_resource_on_data_services() -> None:
     tagged_statement = next(
         s for s in document["Statement"] if s["Sid"] == "AllowManageTaggedTestResources"
     )
-    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-ecs-test*"]
+    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-beta*"]
 
 
 def test_provisioner_policy_excludes_ec2_network_deletes() -> None:
@@ -240,12 +240,12 @@ def test_provisioner_policy_scopes_ecr_to_tagged_resources_and_grants_assume_rol
         s for s in document["Statement"] if s["Sid"] == "AllowManageTaggedTestResources"
     )
     assert "ecr:*" in tagged_statement["Action"]
-    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-ecs-test*"]
+    assert tagged_statement["Resource"] == ["arn:aws:*:*:*:*integrity-review-beta*"]
 
     assume_statement = next(s for s in document["Statement"] if s["Sid"] == "AllowAssumeImagePublisher")
     assert assume_statement["Action"] == ["sts:AssumeRole"]
     assert assume_statement["Resource"] == [
-        "arn:aws:iam::111111111111:role/integrity-review-ecs-test-image-publisher"
+        "arn:aws:iam::111111111111:role/integrity-review-beta-image-publisher"
     ]
 
 

@@ -10,7 +10,7 @@ from infra.aws.utils import iam_utils
 
 from .aws_stub import stubbed_client
 
-ROLE_NAME = "integrity-review-ecs-test-ecs-task"
+ROLE_NAME = "integrity-review-beta-ecs-task"
 ROLE_ARN = f"arn:aws:iam::111111111111:role/{ROLE_NAME}"
 
 

@@ -195,6 +195,9 @@ async def _process_envelope(
 
 
 async def handle_message(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    # Poison-message policy: a malformed envelope or unsupported message_type can
+    # never become processable by redelivery, so it is deleted directly here
+    # rather than left in place for the queue's own redrive-to-DLQ policy.
     receipt_handle = message["ReceiptHandle"]
     try:
         envelope = SqsRequestEnvelope.model_validate(json.loads(message.get("Body", "")))

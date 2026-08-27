@@ -17,22 +17,23 @@ _LOGGER = logging.getLogger("integrity_review_pipeline.worker")
 
 
 def _build_context(config: WorkerConfig) -> WorkerContext:
+    store = S3ObjectStore(
+        config.storage_bucket,
+        region_name=config.aws_region,
+        presign_expires_in_seconds=config.presign_expires_in_seconds,
+    )
     return WorkerContext(
         stage=config.stage,
         organization_id=config.organization_id,
-        media_store=S3ObjectStore(
-            config.media_bucket,
-            region_name=config.aws_region,
-            presign_expires_in_seconds=config.presign_expires_in_seconds,
-        ),
-        request_store=S3ObjectStore(config.request_bucket, region_name=config.aws_region),
-        result_store=S3ObjectStore(config.result_bucket, region_name=config.aws_region),
+        media_store=store,
+        request_store=store,
+        result_store=store,
         request_queue=SqsClient(config.request_queue_url, region_name=config.aws_region),
         result_queue=SqsClient(config.result_queue_url, region_name=config.aws_region),
         gemini=GoogleGeminiClient(config.gemini_api_key),
         limiter=FairGeminiLimiter(
             global_limit=config.gemini_task_limit,
-            max_concurrent_reviews=config.max_concurrent_reviews,
+            per_review_limit=config.gemini_per_review_limit,
         ),
         task_protection=TaskProtection(logger=StructuredLogger("task-protection")),
         make_logger=StructuredLogger,

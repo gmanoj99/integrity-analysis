@@ -35,22 +35,16 @@ def _check_identity(ctx: OrchestratorContext) -> dict[str, Any]:
     )
 
 
-def _check_buckets(ctx: OrchestratorContext, names: dict[str, str]) -> list[dict[str, Any]]:
+def _check_storage_bucket(ctx: OrchestratorContext) -> dict[str, Any]:
+    """The shared media bucket is externally owned; only verify reachability here."""
+
     s3 = ctx.client("s3")
-    checks = []
-    for key in ("media_bucket", "request_bucket", "result_bucket"):
-        bucket_name = names[key]
-        try:
-            public_access_block = s3.get_public_access_block(Bucket=bucket_name)[
-                "PublicAccessBlockConfiguration"
-            ]
-            encryption = s3.get_bucket_encryption(Bucket=bucket_name)
-            blocked = all(public_access_block.values())
-            encrypted = bool(encryption["ServerSideEncryptionConfiguration"]["Rules"])
-            checks.append(_check(f"s3.{key}", blocked and encrypted, f"blocked={blocked} encrypted={encrypted}"))
-        except ClientError as error:
-            checks.append(_check(f"s3.{key}", False, f"error={error}"))
-    return checks
+    bucket_name = ctx.config.storage_bucket_name
+    try:
+        s3.head_bucket(Bucket=bucket_name)
+        return _check("s3.storage_bucket", True, f"bucket={bucket_name} reachable")
+    except ClientError as error:
+        return _check("s3.storage_bucket", False, f"bucket={bucket_name} error={error}")
 
 
 def _check_queues(ctx: OrchestratorContext, names: dict[str, str]) -> list[dict[str, Any]]:
@@ -116,7 +110,7 @@ def run_status_checks(ctx: OrchestratorContext, *, deep: bool) -> dict[str, Any]
     checks: list[dict[str, Any]] = [_check_identity(ctx)]
 
     if deep:
-        checks.extend(_check_buckets(ctx, names))
+        checks.append(_check_storage_bucket(ctx))
         checks.extend(_check_queues(ctx, names))
         checks.append(_check_ecs_service(ctx, names))
         checks.append(_check_pipeline(ctx, names))

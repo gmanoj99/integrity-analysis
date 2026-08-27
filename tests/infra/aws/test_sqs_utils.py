@@ -9,15 +9,15 @@ from infra.aws.utils import sqs_utils
 
 from .aws_stub import stubbed_client
 
-QUEUE_URL = "https://sqs.ap-south-1.amazonaws.com/111111111111/integrity-review-ecs-test-request"
-QUEUE_ARN = "arn:aws:sqs:ap-south-1:111111111111:integrity-review-ecs-test-request"
+QUEUE_URL = "https://sqs.ap-south-1.amazonaws.com/111111111111/integrity-review-beta-request"
+QUEUE_ARN = "arn:aws:sqs:ap-south-1:111111111111:integrity-review-beta-request"
 
 
 def test_ensure_queue_creates_new_queue_when_missing() -> None:
     client, stubber = stubbed_client("sqs")
     spec = QueueSpec(
-        name="integrity-review-ecs-test-request",
-        kms_key_id="alias/integrity-review-ecs-test-data",
+        name="integrity-review-beta-request",
+        kms_key_id="alias/integrity-review-beta-data",
         visibility_timeout_seconds=300,
         message_retention_seconds=345600,
         dlq_arn=None,
@@ -42,13 +42,13 @@ def test_ensure_queue_creates_new_queue_when_missing() -> None:
 def test_ensure_queue_updates_existing_queue_and_applies_policy() -> None:
     client, stubber = stubbed_client("sqs")
     spec = QueueSpec(
-        name="integrity-review-ecs-test-request",
-        kms_key_id="alias/integrity-review-ecs-test-data",
+        name="integrity-review-beta-request",
+        kms_key_id="alias/integrity-review-beta-data",
         visibility_timeout_seconds=300,
         message_retention_seconds=345600,
-        dlq_arn="arn:aws:sqs:ap-south-1:111111111111:integrity-review-ecs-test-request-dlq",
+        dlq_arn="arn:aws:sqs:ap-south-1:111111111111:integrity-review-beta-request-dlq",
         max_receive_count=5,
-        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-task",),
+        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",),
     )
 
     stubber.add_response("get_queue_url", {"QueueUrl": QUEUE_URL}, ANY)

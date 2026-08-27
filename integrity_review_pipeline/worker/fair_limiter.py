@@ -1,8 +1,8 @@
-"""Task-global Gemini concurrency limit with a fair per-review sub-cap.
+"""Task-global Gemini concurrency limit with an explicit per-review sub-cap.
 
-A single review with many chunks must not starve the other concurrent review of
-Gemini slots, so each review gets its own sub-semaphore capped at a fair share of
-the task-global limit, in addition to acquiring a task-global slot.
+A single review with many chunks must not starve the other concurrent reviews of
+Gemini slots, so each review gets its own sub-semaphore capped at an explicit
+per-review limit, in addition to acquiring a task-global slot.
 """
 
 from __future__ import annotations
@@ -35,9 +35,9 @@ class ReviewGeminiLimiter:
 
 
 class FairGeminiLimiter:
-    def __init__(self, *, global_limit: int, max_concurrent_reviews: int) -> None:
+    def __init__(self, *, global_limit: int, per_review_limit: int) -> None:
         self._global = asyncio.Semaphore(global_limit)
-        self._per_review_limit = max(1, global_limit // max(1, max_concurrent_reviews))
+        self._per_review_limit = per_review_limit
 
     def for_review(self) -> ReviewGeminiLimiter:
         return ReviewGeminiLimiter(self._global, asyncio.Semaphore(self._per_review_limit))

@@ -12,6 +12,7 @@ from typing import Any
 ECS_TASKS_PRINCIPAL = "ecs-tasks.amazonaws.com"
 REQUEST_PREFIX_TEMPLATE = "{stage}/media/ai_integrity_review_requests/*"
 RESULT_PREFIX_TEMPLATE = "{stage}/media/ai_integrity_review_results/*"
+RECORDING_PREFIX_TEMPLATE = "{stage}/media/*"
 
 
 def _statement(
@@ -157,32 +158,33 @@ def ecs_task_execution_role_policy(
     )
 
 
-def ecs_task_s3_policy(
-    *, media_bucket_arn: str, request_bucket_arn: str, result_bucket_arn: str, stage: str
-) -> dict[str, Any]:
+def ecs_task_s3_policy(*, storage_bucket_arn: str, stage: str) -> dict[str, Any]:
+    """Least privilege on the single shared media bucket, scoped to beta's own prefixes."""
+
     request_prefix = REQUEST_PREFIX_TEMPLATE.format(stage=stage)
     result_prefix = RESULT_PREFIX_TEMPLATE.format(stage=stage)
+    recording_prefix = RECORDING_PREFIX_TEMPLATE.format(stage=stage)
     return _document(
         [
             _statement(
-                sid="AllowMediaRead",
+                sid="AllowRecordingRead",
                 actions=["s3:GetObject"],
-                resources=[f"{media_bucket_arn}/*"],
+                resources=[f"{storage_bucket_arn}/{recording_prefix}"],
             ),
             _statement(
                 sid="AllowRequestRead",
                 actions=["s3:GetObject"],
-                resources=[f"{request_bucket_arn}/{request_prefix}"],
+                resources=[f"{storage_bucket_arn}/{request_prefix}"],
             ),
             _statement(
                 sid="AllowResultReadWrite",
                 actions=["s3:GetObject", "s3:PutObject"],
-                resources=[f"{result_bucket_arn}/{result_prefix}"],
+                resources=[f"{storage_bucket_arn}/{result_prefix}"],
             ),
             _statement(
                 sid="AllowResultPrefixList",
                 actions=["s3:ListBucket"],
-                resources=[result_bucket_arn],
+                resources=[storage_bucket_arn],
                 condition={"StringLike": {"s3:prefix": [result_prefix]}},
             ),
         ]
@@ -583,63 +585,6 @@ def image_publisher_policy(*, repository_arn: str) -> dict[str, Any]:
                     "ecr:DescribeImages",
                 ],
                 resources=[repository_arn],
-            ),
-        ]
-    )
-
-
-def test_operator_policy(
-    *,
-    media_bucket_arn: str,
-    request_bucket_arn: str,
-    result_bucket_arn: str,
-    request_queue_arn: str,
-    result_queue_arn: str,
-    cluster_arn: str,
-    log_group_arn: str,
-    stage: str,
-) -> dict[str, Any]:
-    request_prefix = REQUEST_PREFIX_TEMPLATE.format(stage=stage)
-    result_prefix = RESULT_PREFIX_TEMPLATE.format(stage=stage)
-    return _document(
-        [
-            _statement(
-                sid="AllowUploadApprovedFixtures",
-                actions=["s3:PutObject"],
-                resources=[
-                    f"{media_bucket_arn}/*",
-                    f"{request_bucket_arn}/{request_prefix}",
-                ],
-            ),
-            _statement(
-                sid="AllowReadResults",
-                actions=["s3:GetObject"],
-                resources=[f"{result_bucket_arn}/{result_prefix}"],
-            ),
-            _statement(
-                sid="AllowSendRequest",
-                actions=["sqs:SendMessage"],
-                resources=[request_queue_arn],
-            ),
-            _statement(
-                sid="AllowReadResultQueue",
-                actions=["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:PurgeQueue"],
-                resources=[result_queue_arn],
-            ),
-            _statement(
-                sid="AllowInspectEcs",
-                actions=[
-                    "ecs:DescribeServices",
-                    "ecs:DescribeTasks",
-                    "ecs:ListTasks",
-                    "ecs:GetTaskProtection",
-                ],
-                resources=[f"{cluster_arn}*"],
-            ),
-            _statement(
-                sid="AllowReadLogs",
-                actions=["logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults"],
-                resources=[f"{log_group_arn}:*"],
             ),
         ]
     )

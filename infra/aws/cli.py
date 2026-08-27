@@ -30,7 +30,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--account-id", help="Override account_id from the config file")
     parser.add_argument("--region", help="Override region from the config file")
     parser.add_argument(
-        "--environment", help="Override environment; must be one of 'ecs-test' or 'beta'"
+        "--environment", help="Override environment; this provisioner is beta-only"
     )
     parser.add_argument("--profile", help="AWS CLI profile to use")
     parser.add_argument("--assume-role-arn", help="IAM role to assume instead of using --profile directly")

@@ -8,7 +8,7 @@ from infra.aws.utils import ecr_utils
 
 from .aws_stub import stubbed_client
 
-REPOSITORY_NAME = "integrity-review-ecs-test-worker"
+REPOSITORY_NAME = "integrity-review-beta-worker"
 
 
 def test_repository_exists_true() -> None:

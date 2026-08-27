@@ -61,6 +61,7 @@ class SectionSpec(ContractModel):
     exam_attempt_id: str = Field(min_length=1)
     start_datetime: str
     end_datetime: str | None = None
+    section_type: str | None = None
 
 
 class ActivityTimeline(ContractModel):
@@ -96,6 +97,11 @@ def _build_refs(
     chunks: list[ManifestChunk],
     section_by_attempt: dict[str, SectionSpec],
 ) -> list[EvidenceChunkRef]:
+    # The worker regenerates chunk_id from the S3 key rather than trusting one
+    # from the backend manifest; this is only safe because
+    # timeline.master_timeline.parse_chunk_id re-derives epoch/duration from a
+    # "{epoch}__{duration}" filename stem, so every filename in the manifest
+    # must keep carrying that suffix.
     ordered = sorted(chunks, key=lambda item: item.epoch_ms)
     refs: list[EvidenceChunkRef] = []
     for index, chunk in enumerate(ordered):
@@ -177,6 +183,7 @@ def build_review_request(payload: StagedReviewPayload) -> ReviewRequest:
             order=spec.order,
             start_datetime=spec.start_datetime,
             end_datetime=spec.end_datetime,
+            section_type=spec.section_type,
         )
         for spec in sorted(payload.activity_timeline.sections, key=lambda item: item.order)
     ]

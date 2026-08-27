@@ -9,7 +9,7 @@ from infra.aws.utils import kms_utils
 
 from .aws_stub import stubbed_client
 
-ALIAS = "integrity-review-ecs-test-data"
+ALIAS = "integrity-review-beta-data"
 KEY_ID = "1234abcd-12ab-34cd-56ef-1234567890ab"
 KEY_ARN = f"arn:aws:kms:ap-south-1:111111111111:key/{KEY_ID}"
 

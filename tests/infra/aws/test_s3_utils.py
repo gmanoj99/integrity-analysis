@@ -9,7 +9,7 @@ from infra.aws.utils import s3_utils
 
 from .aws_stub import stubbed_client
 
-BUCKET_NAME = "integrity-review-ecs-test-media-111111111111"
+BUCKET_NAME = "integrity-review-beta-media-111111111111"
 KMS_KEY_ARN = "arn:aws:kms:ap-south-1:111111111111:key/abcd1234"
 
 
@@ -36,7 +36,7 @@ def test_ensure_bucket_is_idempotent_and_reapplies_hardening() -> None:
         region="ap-south-1",
         kms_key_arn=KMS_KEY_ARN,
         expiration_days=7,
-        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-ecs-test-ecs-task",),
+        allowed_role_arns=("arn:aws:iam::111111111111:role/integrity-review-beta-ecs-task",),
     )
 
     stubber.add_response("head_bucket", {}, {"Bucket": BUCKET_NAME})
@@ -57,7 +57,7 @@ def test_ensure_bucket_is_idempotent_and_reapplies_hardening() -> None:
 
 def test_put_json_object_uses_kms_encryption() -> None:
     client, stubber = stubbed_client("s3")
-    body = {"resource_prefix": "integrity-review-ecs-test", "resources": {}}
+    body = {"resource_prefix": "integrity-review-beta", "resources": {}}
 
     stubber.add_response("put_object", {}, ANY)
     with stubber:

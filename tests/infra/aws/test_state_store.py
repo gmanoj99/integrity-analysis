@@ -13,7 +13,7 @@ from infra.aws.state_store import (
 
 from .aws_stub import stubbed_client
 
-RESOURCE_PREFIX = "integrity-review-ecs-test"
+RESOURCE_PREFIX = "integrity-review-beta"
 STATE_BUCKET = f"{RESOURCE_PREFIX}-tf-state-111111111111"
 KMS_KEY_ARN = "arn:aws:kms:ap-south-1:111111111111:key/abcd"
 
@@ -53,8 +53,8 @@ def test_save_writes_kms_encrypted_state_object() -> None:
         resources={
             "media_bucket": ResourceRecord(
                 resource_type="s3.bucket",
-                identifier="integrity-review-ecs-test-media",
-                arn="arn:aws:s3:::integrity-review-ecs-test-media",
+                identifier="integrity-review-beta-media",
+                arn="arn:aws:s3:::integrity-review-beta-media",
                 config_hash="deadbeef",
                 status="created",
                 managed_by_tool=True,

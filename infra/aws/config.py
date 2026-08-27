@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ALLOWED_ENVIRONMENTS = frozenset({"ecs-test", "beta"})
+ALLOWED_ENVIRONMENTS = frozenset({"beta"})
 DEFAULT_REGION = "ap-south-1"
 
 
@@ -36,6 +36,7 @@ class SizingConfig:
     desired_count: int
     max_concurrent_reviews: int
     gemini_task_limit: int
+    gemini_per_review_limit: int
     min_task_count: int
     max_task_count: int
     scale_in_idle_periods: int
@@ -59,6 +60,8 @@ class EnvironmentConfig:
     cost_center: str
     stage: str
     organization_id: str
+    storage_bucket_name: str
+    storage_kms_key_arn: str | None
     image_publisher_trusted_principal_arns: tuple[str, ...]
     network: NetworkConfig
     sizing: SizingConfig
@@ -103,6 +106,7 @@ def _build_sizing(data: dict[str, Any]) -> SizingConfig:
         desired_count=int(_require(data, "desired_count")),
         max_concurrent_reviews=int(_require(data, "max_concurrent_reviews")),
         gemini_task_limit=int(_require(data, "gemini_task_limit")),
+        gemini_per_review_limit=int(_require(data, "gemini_per_review_limit")),
         min_task_count=int(_require(data, "min_task_count")),
         max_task_count=int(_require(data, "max_task_count")),
         scale_in_idle_periods=int(data.get("scale_in_idle_periods", 5)),
@@ -146,12 +150,14 @@ def load_environment_config(
     config = EnvironmentConfig(
         account_id=str(_require(raw, "account_id")),
         region=raw.get("region", DEFAULT_REGION),
-        environment=raw.get("environment", "ecs-test"),
+        environment=raw.get("environment", "beta"),
         project=_require(raw, "project"),
         owner=_require(raw, "owner"),
         cost_center=_require(raw, "cost_center"),
-        stage=raw.get("stage", "ecs-test"),
+        stage=raw.get("stage", "beta"),
         organization_id=raw.get("organization_id", "local"),
+        storage_bucket_name=_require(raw, "storage_bucket_name"),
+        storage_kms_key_arn=raw.get("storage_kms_key_arn"),
         image_publisher_trusted_principal_arns=tuple(
             raw.get("image_publisher_trusted_principal_arns", ())
         ),

@@ -33,7 +33,6 @@ from .policies import (
     image_publisher_policy,
     infrastructure_provisioner_policy,
     pipeline_trigger_events_policy,
-    test_operator_policy,
 )
 from .session import client as make_client
 from .specs import (
@@ -134,9 +133,6 @@ def resource_names(config: EnvironmentConfig) -> dict[str, str]:
         "kms_data": f"{prefix}-data",
         "kms_secrets": f"{prefix}-secrets",
         "kms_logs": f"{prefix}-logs",
-        "media_bucket": f"{prefix}-media-{config.account_id}",
-        "request_bucket": f"{prefix}-requests-{config.account_id}",
-        "result_bucket": f"{prefix}-results-{config.account_id}",
         "request_queue": f"{prefix}-request",
         "request_dlq": f"{prefix}-request-dlq",
         "result_queue": f"{prefix}-result",
@@ -147,7 +143,6 @@ def resource_names(config: EnvironmentConfig) -> dict[str, str]:
         "execution_role": f"{prefix}-ecs-execution",
         "task_role": f"{prefix}-ecs-task",
         "image_publisher_role": f"{prefix}-image-publisher",
-        "test_operator_role": f"{prefix}-test-operator",
         "cluster": f"{prefix}-cluster",
         "task_family": f"{prefix}-worker",
         "service": f"{prefix}-worker-service",
@@ -293,30 +288,10 @@ def _ensure_kms(ctx: OrchestratorContext, manifest: DeploymentManifest, names: d
 
 
 def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
-    s3 = ctx.client("s3")
     sqs = ctx.client("sqs")
     tags = ctx.config.resolved_tags()
     data_kms_arn = manifest.resources["kms_data"].arn
     task_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['task_role']}"
-    operator_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['test_operator_role']}"
-
-    for key, bucket_name in (
-        ("media_bucket", names["media_bucket"]),
-        ("request_bucket", names["request_bucket"]),
-        ("result_bucket", names["result_bucket"]),
-    ):
-        arn = s3_utils.ensure_bucket(
-            s3,
-            BucketSpec(
-                bucket_name,
-                ctx.config.region,
-                data_kms_arn,
-                ctx.config.retention.bucket_expiration_days,
-                (task_role_arn, operator_role_arn),
-            ),
-            tags,
-        )
-        _record(manifest, key, resource_type="s3.bucket", identifier=bucket_name, arn=arn)
 
     request_dlq_url = sqs_utils.ensure_queue(
         sqs,
@@ -346,7 +321,7 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
             ctx.config.retention.queue_message_retention_seconds,
             request_dlq_arn,
             5,
-            (task_role_arn, operator_role_arn),
+            (task_role_arn,),
         ),
         tags,
     )
@@ -359,7 +334,7 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
             ctx.config.retention.queue_message_retention_seconds,
             result_dlq_arn,
             5,
-            (task_role_arn, operator_role_arn),
+            (task_role_arn,),
         ),
         tags,
     )
@@ -443,6 +418,13 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
     _record(manifest, "execution_role", resource_type="iam.role", identifier=names["execution_role"], arn=execution_role_arn)
 
     cluster_arn = f"arn:aws:ecs:{ctx.config.region}:{account_id}:cluster/{names['cluster']}"
+    storage_bucket_arn = f"arn:aws:s3:::{ctx.config.storage_bucket_name}"
+    kms_key_arns = [manifest.resources["kms_data"].arn]
+    if ctx.config.storage_kms_key_arn:
+        # The shared media bucket lives outside this repo and may be
+        # encrypted with its own KMS key; kms_data only covers the
+        # request/result SQS queues provisioned here.
+        kms_key_arns.append(ctx.config.storage_kms_key_arn)
     task_role_arn = iam_utils.ensure_role(
         iam,
         RoleSpec(
@@ -451,9 +433,7 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
             "ECS task role: S3/SQS/KMS/task-protection least privilege",
             {
                 "s3": ecs_task_s3_policy(
-                    media_bucket_arn=manifest.resources["media_bucket"].arn,
-                    request_bucket_arn=manifest.resources["request_bucket"].arn,
-                    result_bucket_arn=manifest.resources["result_bucket"].arn,
+                    storage_bucket_arn=storage_bucket_arn,
                     stage=ctx.config.stage,
                 ),
                 "sqs": ecs_task_sqs_policy(
@@ -461,8 +441,8 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
                     result_queue_arn=manifest.resources["result_queue"].arn,
                 ),
                 "kms": ecs_task_kms_policy(
-                    read_key_arns=[manifest.resources["kms_data"].arn],
-                    write_key_arns=[manifest.resources["kms_data"].arn],
+                    read_key_arns=kms_key_arns,
+                    write_key_arns=kms_key_arns,
                 ),
                 "task_protection": ecs_task_protection_policy(cluster_arn=cluster_arn),
             },
@@ -487,36 +467,11 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
         manifest, "image_publisher_role", resource_type="iam.role", identifier=names["image_publisher_role"], arn=image_publisher_arn
     )
 
-    operator_arn = iam_utils.ensure_role(
-        iam,
-        RoleSpec(
-            names["test_operator_role"],
-            trust,
-            "Test operator: approved fixtures, request/result queues, read-only ECS/logs",
-            {
-                "operator": test_operator_policy(
-                    media_bucket_arn=manifest.resources["media_bucket"].arn,
-                    request_bucket_arn=manifest.resources["request_bucket"].arn,
-                    result_bucket_arn=manifest.resources["result_bucket"].arn,
-                    request_queue_arn=manifest.resources["request_queue"].arn,
-                    result_queue_arn=manifest.resources["result_queue"].arn,
-                    cluster_arn=cluster_arn,
-                    log_group_arn=log_group_arn,
-                    stage=ctx.config.stage,
-                )
-            },
-        ),
-        tags,
-    )
-    _record(manifest, "test_operator_role", resource_type="iam.role", identifier=names["test_operator_role"], arn=operator_arn)
-
 
 def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> dict[str, str]:
     sizing = ctx.config.sizing
     return {
-        "MEDIA_BUCKET": names["media_bucket"],
-        "REQUEST_BUCKET": names["request_bucket"],
-        "RESULT_BUCKET": names["result_bucket"],
+        "AWS_STORAGE_BUCKET_NAME": ctx.config.storage_bucket_name,
         "REQUEST_QUEUE_URL": manifest.resources["request_queue"].identifier,
         "RESULT_QUEUE_URL": manifest.resources["result_queue"].identifier,
         "AWS_REGION": ctx.config.region,
@@ -524,6 +479,7 @@ def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, 
         "ORGANIZATION_ID": ctx.config.organization_id,
         "MAX_CONCURRENT_REVIEWS": str(sizing.max_concurrent_reviews),
         "GEMINI_TASK_LIMIT": str(sizing.gemini_task_limit),
+        "GEMINI_PER_REVIEW_LIMIT": str(sizing.gemini_per_review_limit),
         "VISIBILITY_TIMEOUT_SECONDS": "300",
         "HEARTBEAT_INTERVAL_SECONDS": "90",
         "POLL_WAIT_TIME_SECONDS": "20",
@@ -944,7 +900,8 @@ def _ensure_autoscaling(ctx: OrchestratorContext, manifest: DeploymentManifest, 
             scalable_dimension=_ECS_SCALABLE_DIMENSION,
             adjustment_type="ExactCapacity",
             # Bounds are relative to the alarm threshold (>=1 message): [1,3) -> 1
-            # task, >=3 -> 2 tasks. Matches MAX_CONCURRENT_REVIEWS=2 per task.
+            # task, >=3 -> 2 tasks. This scales task count by queue depth, not by
+            # MAX_CONCURRENT_REVIEWS=4 (reviews per task); the two are independent.
             step_adjustments=(
                 StepAdjustment(scaling_adjustment=1, metric_interval_lower_bound=0.0, metric_interval_upper_bound=2.0),
                 StepAdjustment(scaling_adjustment=2, metric_interval_lower_bound=2.0),
@@ -1069,9 +1026,11 @@ def plan(ctx: OrchestratorContext) -> dict[str, str]:
     ecr = ctx.client("ecr")
 
     summary = {
-        "media_bucket": "exists" if s3_utils.bucket_exists(s3, names["media_bucket"]) else "create",
-        "request_bucket": "exists" if s3_utils.bucket_exists(s3, names["request_bucket"]) else "create",
-        "result_bucket": "exists" if s3_utils.bucket_exists(s3, names["result_bucket"]) else "create",
+        "storage_bucket": (
+            "exists (external)"
+            if s3_utils.bucket_exists(s3, ctx.config.storage_bucket_name)
+            else "missing (external, not provisioned by this tool)"
+        ),
         "ecr_repository": "exists" if ecr_utils.repository_exists(ecr, names["ecr_repository"]) else "create",
         "cluster": (
             "exists"
@@ -1119,10 +1078,9 @@ _STEP_ORDER_INDEX = {
     "internet_gateway": 0, "nat_gateway": 0, "public_route_table": 0, "private_route_table": 0,
     "security_group": 0, "s3_gateway_endpoint": 0,
     "kms_data": 1, "kms_secrets": 1, "kms_logs": 1,
-    "media_bucket": 2, "request_bucket": 2, "result_bucket": 2,
     "request_dlq": 2, "result_dlq": 2, "request_queue": 2, "result_queue": 2,
     "log_group": 3, "ecr_repository": 4, "gemini_secret": 5,
-    "execution_role": 6, "task_role": 6, "image_publisher_role": 6, "test_operator_role": 6,
+    "execution_role": 6, "task_role": 6, "image_publisher_role": 6,
     "cluster": 7, "task_definition": 7, "service": 7,
     "build_log_group": 8, "deploy_log_group": 8, "pipeline_artifact_bucket": 8, "source_repository": 8,
     "codebuild_role": 8, "deploy_role": 8, "build_project": 8, "deploy_project": 8,

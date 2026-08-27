@@ -29,7 +29,7 @@ environment variables (see `worker/config.py`). Build and run it locally with:
 ```bash
 docker build -t integrity-review-worker .
 docker run --rm \
-  -e MEDIA_BUCKET=... -e REQUEST_BUCKET=... -e RESULT_BUCKET=... \
+  -e AWS_STORAGE_BUCKET_NAME=... \
   -e REQUEST_QUEUE_URL=... -e RESULT_QUEUE_URL=... \
   -e AWS_REGION=... -e GEMINI_API_KEY=... \
   integrity-review-worker

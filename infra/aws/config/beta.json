@@ -7,6 +7,8 @@
   "cost_center": "eng-beta",
   "stage": "beta",
   "organization_id": "local",
+  "storage_bucket_name": "nxtwave-assessments-backend-nxtwave-media-static",
+  "storage_kms_key_arn": null,
   "image_publisher_trusted_principal_arns": [
     "arn:aws:iam::934167421030:role/integrity-review-beta-codebuild"
   ],
@@ -21,8 +23,9 @@
     "task_memory": "4096",
     "ephemeral_storage_gib": 20,
     "desired_count": 0,
-    "max_concurrent_reviews": 2,
+    "max_concurrent_reviews": 4,
     "gemini_task_limit": 24,
+    "gemini_per_review_limit": 12,
     "min_task_count": 0,
     "max_task_count": 2,
     "scale_in_idle_periods": 5

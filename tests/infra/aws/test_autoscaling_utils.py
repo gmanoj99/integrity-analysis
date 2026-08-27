@@ -7,12 +7,12 @@ from infra.aws.utils import autoscaling_utils
 
 from .aws_stub import stubbed_client
 
-RESOURCE_ID = "service/integrity-review-ecs-test-cluster/integrity-review-ecs-test-worker-service"
+RESOURCE_ID = "service/integrity-review-beta-cluster/integrity-review-beta-worker-service"
 SCALABLE_DIMENSION = "ecs:service:DesiredCount"
 SERVICE_NAMESPACE = "ecs"
 POLICY_ARN = (
     "arn:aws:autoscaling:ap-south-1:111111111111:scalingPolicy:abc123:resource/ecs/"
-    f"{RESOURCE_ID}:policyName/integrity-review-ecs-test-scale-out-on-backlog"
+    f"{RESOURCE_ID}:policyName/integrity-review-beta-scale-out-on-backlog"
 )
 
 
@@ -71,7 +71,7 @@ def test_deregister_scalable_target_scopes_to_resource_and_dimension() -> None:
 def test_put_step_scaling_policy_builds_step_adjustments_and_returns_arn() -> None:
     client, stubber = stubbed_client("application-autoscaling")
     spec = StepScalingPolicySpec(
-        name="integrity-review-ecs-test-scale-out-on-backlog",
+        name="integrity-review-beta-scale-out-on-backlog",
         service_namespace=SERVICE_NAMESPACE,
         resource_id=RESOURCE_ID,
         scalable_dimension=SCALABLE_DIMENSION,
@@ -117,7 +117,7 @@ def test_put_step_scaling_policy_builds_step_adjustments_and_returns_arn() -> No
 def test_put_step_scaling_policy_omits_bounds_that_are_none() -> None:
     client, stubber = stubbed_client("application-autoscaling")
     spec = StepScalingPolicySpec(
-        name="integrity-review-ecs-test-scale-in-on-idle",
+        name="integrity-review-beta-scale-in-on-idle",
         service_namespace=SERVICE_NAMESPACE,
         resource_id=RESOURCE_ID,
         scalable_dimension=SCALABLE_DIMENSION,
@@ -156,7 +156,7 @@ def test_delete_scaling_policy_scopes_to_name_and_resource() -> None:
         "delete_scaling_policy",
         {},
         {
-            "PolicyName": "integrity-review-ecs-test-scale-out-on-backlog",
+            "PolicyName": "integrity-review-beta-scale-out-on-backlog",
             "ServiceNamespace": SERVICE_NAMESPACE,
             "ResourceId": RESOURCE_ID,
             "ScalableDimension": SCALABLE_DIMENSION,
@@ -166,7 +166,7 @@ def test_delete_scaling_policy_scopes_to_name_and_resource() -> None:
     with stubber:
         autoscaling_utils.delete_scaling_policy(
             client,
-            name="integrity-review-ecs-test-scale-out-on-backlog",
+            name="integrity-review-beta-scale-out-on-backlog",
             service_namespace=SERVICE_NAMESPACE,
             resource_id=RESOURCE_ID,
             scalable_dimension=SCALABLE_DIMENSION,

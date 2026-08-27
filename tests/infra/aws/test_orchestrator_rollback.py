@@ -65,12 +65,14 @@ def _config() -> EnvironmentConfig:
     return EnvironmentConfig(
         account_id="111111111111",
         region="ap-south-1",
-        environment="ecs-test",
+        environment="beta",
         project="integrity-review",
         owner="platform-team",
         cost_center="eng-test",
-        stage="ecs-test",
+        stage="beta",
         organization_id="local",
+        storage_bucket_name="nxtwave-assessments-backend-nxtwave-media-static",
+        storage_kms_key_arn=None,
         image_publisher_trusted_principal_arns=(),
         network=NetworkConfig(
             vpc_cidr_block="10.90.0.0/16",
@@ -80,7 +82,8 @@ def _config() -> EnvironmentConfig:
         ),
         sizing=SizingConfig(
             task_cpu="2048", task_memory="4096", ephemeral_storage_gib=20,
-            desired_count=0, max_concurrent_reviews=2, gemini_task_limit=24,
+            desired_count=0, max_concurrent_reviews=4, gemini_task_limit=24,
+            gemini_per_review_limit=12,
             min_task_count=0, max_task_count=2, scale_in_idle_periods=5,
         ),
         retention=RetentionConfig(
@@ -104,16 +107,16 @@ def _record(resource_type: str, identifier: str) -> ResourceRecord:
 
 def _manifest() -> DeploymentManifest:
     return DeploymentManifest(
-        resource_prefix="integrity-review-ecs-test",
+        resource_prefix="integrity-review-beta",
         config_hash="deadbeef",
         resources={
-            "media_bucket": _record("s3.bucket", "integrity-review-ecs-test-media"),
+            "media_bucket": _record("s3.bucket", "integrity-review-beta-media"),
             "request_queue": _record("sqs.queue", "https://sqs.example/request"),
-            "log_group": _record("logs.log_group", "/ecs/integrity-review-ecs-test-worker"),
-            "ecr_repository": _record("ecr.repository", "integrity-review-ecs-test-worker"),
-            "gemini_secret": _record("secretsmanager.secret", "integrity-review-ecs-test/gemini-api-key"),
-            "task_role": _record("iam.role", "integrity-review-ecs-test-ecs-task"),
-            "alarm.dlq-depth": _record("cloudwatch.alarm", "integrity-review-ecs-test-request-dlq-not-empty"),
+            "log_group": _record("logs.log_group", "/ecs/integrity-review-beta-worker"),
+            "ecr_repository": _record("ecr.repository", "integrity-review-beta-worker"),
+            "gemini_secret": _record("secretsmanager.secret", "integrity-review-beta/gemini-api-key"),
+            "task_role": _record("iam.role", "integrity-review-beta-ecs-task"),
+            "alarm.dlq-depth": _record("cloudwatch.alarm", "integrity-review-beta-request-dlq-not-empty"),
         },
     )
 
