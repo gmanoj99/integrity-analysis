@@ -20,7 +20,7 @@
     "task_memory": "4096",
     "ephemeral_storage_gib": 20,
     "desired_count": 0,
-    "max_concurrent_reviews": 4,
+    "max_concurrent_reviews": 2,
     "gemini_task_limit": 24,
     "gemini_per_review_limit": 12,
     "min_task_count": 0,

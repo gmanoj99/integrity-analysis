@@ -606,7 +606,7 @@ def _ensure_autoscaling(ctx: OrchestratorContext, manifest: DeploymentManifest, 
             adjustment_type="ExactCapacity",
             # Bounds are relative to the alarm threshold (>=1 message): [1,3) -> 1
             # task, >=3 -> 2 tasks. This scales task count by queue depth, not by
-            # MAX_CONCURRENT_REVIEWS=4 (reviews per task); the two are independent.
+            # MAX_CONCURRENT_REVIEWS=2 (reviews per task); the two are independent.
             step_adjustments=(
                 StepAdjustment(scaling_adjustment=1, metric_interval_lower_bound=0.0, metric_interval_upper_bound=2.0),
                 StepAdjustment(scaling_adjustment=2, metric_interval_lower_bound=2.0),

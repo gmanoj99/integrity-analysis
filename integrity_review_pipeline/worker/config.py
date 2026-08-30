@@ -22,7 +22,7 @@ class WorkerConfig:
     gemini_api_key: str
     organization_id: str
     stage: str = "beta"
-    max_concurrent_reviews: int = 4
+    max_concurrent_reviews: int = 2,
     gemini_task_limit: int = 24
     gemini_per_review_limit: int = 12
     visibility_timeout_seconds: int = 300
@@ -43,7 +43,7 @@ class WorkerConfig:
             gemini_api_key=_require_env("GEMINI_API_KEY"),
             organization_id=os.environ.get("ORGANIZATION_ID", "local"),
             stage=stage,
-            max_concurrent_reviews=int(os.environ.get("MAX_CONCURRENT_REVIEWS", "4")),
+            max_concurrent_reviews=int(os.environ.get("MAX_CONCURRENT_REVIEWS", "2")),
             gemini_task_limit=int(os.environ.get("GEMINI_TASK_LIMIT", "24")),
             gemini_per_review_limit=int(os.environ.get("GEMINI_PER_REVIEW_LIMIT", "12")),
             visibility_timeout_seconds=int(os.environ.get("VISIBILITY_TIMEOUT_SECONDS", "300")),
