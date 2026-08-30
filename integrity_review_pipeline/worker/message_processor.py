@@ -85,14 +85,14 @@ def result_object_key(*, stage: str, org_assess_id: str, attempt_user_id: str, r
 
 
 async def _publish_result(
-    ctx: WorkerContext, *, review_id: str, review_status: str, error_message: str | None
+    ctx: WorkerContext, *, review_id: str, review_status: str, failure_reason: str | None
 ) -> None:
     body = json.dumps(
         {
             "message_type": RESULT_MESSAGE_TYPE,
             "review_id": review_id,
             "review_status": review_status,
-            "error_message": error_message,
+            "failure_reason": failure_reason,
         }
     )
     await ctx.response_queue.send(body)
@@ -138,7 +138,7 @@ async def _run_and_publish(
                         ctx,
                         review_id=payload.review_id,
                         review_status="FAILURE",
-                        error_message=str(error),
+                        failure_reason="ANALYSIS_FAILED",
                     )
                 except Exception as publish_error:  # noqa: BLE001
                     logger.error(
@@ -156,7 +156,7 @@ async def _run_and_publish(
                     ctx,
                     review_id=payload.review_id,
                     review_status="SUCCESS",
-                    error_message=None,
+                    failure_reason=None,
                 )
             except Exception as error:  # noqa: BLE001 - leave message for redelivery
                 logger.error(
@@ -195,7 +195,7 @@ async def _process_envelope(
         logger.info("message-processor: result already exists, republishing without Gemini")
         try:
             await _publish_result(
-                ctx, review_id=payload.review_id, review_status="SUCCESS", error_message=None
+                ctx, review_id=payload.review_id, review_status="SUCCESS", failure_reason=None
             )
         except Exception as error:  # noqa: BLE001 - leave message for redelivery
             logger.error("message-processor: republish failed, retaining message", error=str(error))
