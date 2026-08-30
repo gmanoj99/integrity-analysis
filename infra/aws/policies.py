@@ -136,7 +136,7 @@ def ecs_task_s3_policy(*, storage_bucket_arn: str, stage: str) -> dict[str, Any]
     )
 
 
-def ecs_task_sqs_policy(*, request_queue_arn: str, result_queue_arn: str) -> dict[str, Any]:
+def ecs_task_sqs_policy(*, request_queue_arn: str, response_queue_arn: str) -> dict[str, Any]:
     return _document(
         [
             _statement(
@@ -149,10 +149,28 @@ def ecs_task_sqs_policy(*, request_queue_arn: str, result_queue_arn: str) -> dic
                 resources=[request_queue_arn],
             ),
             _statement(
-                sid="AllowResultQueuePublish",
+                sid="AllowResponseQueuePublish",
                 actions=["sqs:SendMessage"],
-                resources=[result_queue_arn],
+                resources=[response_queue_arn],
             ),
+        ]
+    )
+
+
+def ecs_task_ai_usage_logs_policy(*, log_group_arn: str) -> dict[str, Any]:
+    """Least privilege for the worker's boto3 PutLogEvents path to the shared custom-ai-logs group."""
+
+    return _document(
+        [
+            _statement(
+                sid="AllowAiUsageLogPublish",
+                actions=[
+                    "logs:CreateLogStream",
+                    "logs:DescribeLogStreams",
+                    "logs:PutLogEvents",
+                ],
+                resources=[log_group_arn],
+            )
         ]
     )
 

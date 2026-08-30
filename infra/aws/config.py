@@ -65,6 +65,7 @@ class EnvironmentConfig:
     sizing: SizingConfig
     retention: RetentionConfig
     tags: dict[str, str]
+    custom_ai_logs_group_name: str = "custom-ai-logs"
 
     @property
     def resource_prefix(self) -> str:
@@ -160,6 +161,7 @@ def load_environment_config(
         sizing=_build_sizing(_require(raw, "sizing")),
         retention=_build_retention(_require(raw, "retention")),
         tags=dict(raw.get("tags", {})),
+        custom_ai_logs_group_name=raw.get("custom_ai_logs_group_name", "custom-ai-logs"),
     )
     _validate_not_production(config, known_prod_account_ids)
     return config

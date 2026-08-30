@@ -32,6 +32,16 @@ def _backoff_seconds(attempt: int) -> float:
     return random.uniform(0, capped_delay)
 
 
+def _usage_from_response(response: Any) -> dict[str, int]:
+    usage = getattr(response, "usage_metadata", None)
+    return {
+        "prompt_tk": getattr(usage, "prompt_token_count", None) or 0,
+        "completion_tk": getattr(usage, "candidates_token_count", None) or 0,
+        "cache_tk": getattr(usage, "cached_content_token_count", None) or 0,
+        "reasoning_tk": getattr(usage, "thoughts_token_count", None) or 0,
+    }
+
+
 class GoogleGeminiClient:
     def __init__(self, api_key: str) -> None:
         try:
@@ -69,4 +79,4 @@ class GoogleGeminiClient:
                 attempt += 1
                 continue
             text = response.text or "{}"
-            return {"text": text}
+            return {"text": text, "usage": _usage_from_response(response)}

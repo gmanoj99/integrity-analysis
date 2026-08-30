@@ -22,15 +22,16 @@ is the pure entrypoint: it takes a `ReviewRequest` and injected `PipelineDeps`
 ## ECS worker
 
 `integrity_review_pipeline/worker/` is the production entrypoint: an SQS-driven
-Fargate worker that stages requests/results in S3, runs `run_integrity_review`,
-and publishes `VIDEO_ANALYSIS_RESPONSE` messages. Configuration is entirely via
+Fargate worker that consumes `AI_ANALYSIS_REQUEST` messages, stages
+requests/results in S3, runs `run_integrity_review`, and publishes
+`AI_ANALYSIS_RESPONSE` messages. Configuration is entirely via
 environment variables (see `worker/config.py`). Build and run it locally with:
 
 ```bash
 docker build -t integrity-review-worker .
 docker run --rm \
   -e AWS_STORAGE_BUCKET_NAME=... \
-  -e REQUEST_QUEUE_URL=... -e RESULT_QUEUE_URL=... \
+  -e REQUEST_QUEUE_URL=... -e RESPONSE_QUEUE_URL=... \
   -e AWS_REGION=... -e GEMINI_API_KEY=... \
   integrity-review-worker
 ```

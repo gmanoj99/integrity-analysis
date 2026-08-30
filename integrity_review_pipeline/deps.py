@@ -52,6 +52,20 @@ class Logger(Protocol):
     def error(self, message: str, **fields: Any) -> None: ...
 
 
+class AiUsageLogger(Protocol):
+    def record(
+        self,
+        *,
+        step: str,
+        model_name: str,
+        model_version: str,
+        status: str,
+        latency_seconds: float,
+        usage: Mapping[str, int] | None,
+        extra_meta: Mapping[str, Any],
+    ) -> None: ...
+
+
 class MediaUriProvider(Protocol):
     async def media_uri_for(self, chunk: EvidenceChunkRef) -> str: ...
 
@@ -65,3 +79,4 @@ class PipelineDeps:
     logger: Logger
     media_uri_provider: MediaUriProvider
     organization_id: str
+    ai_usage_logger: AiUsageLogger

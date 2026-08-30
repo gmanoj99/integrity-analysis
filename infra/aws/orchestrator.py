@@ -16,6 +16,7 @@ import boto3
 
 from .config import EnvironmentConfig
 from .policies import (
+    ecs_task_ai_usage_logs_policy,
     ecs_task_execution_role_policy,
     ecs_task_kms_policy,
     ecs_task_protection_policy,
@@ -108,10 +109,10 @@ def resource_names(config: EnvironmentConfig) -> dict[str, str]:
         "kms_data": f"{prefix}-data",
         "kms_secrets": f"{prefix}-secrets",
         "kms_logs": f"{prefix}-logs",
-        "request_queue": f"{prefix}-request",
+        "request_queue": f"{prefix}-request-queue",
         "request_dlq": f"{prefix}-request-dlq",
-        "result_queue": f"{prefix}-result",
-        "result_dlq": f"{prefix}-result-dlq",
+        "response_queue": f"{prefix}-response-queue",
+        "response_dlq": f"{prefix}-response-dlq",
         "log_group": f"/ecs/{prefix}-worker",
         "ecr_repository": f"{prefix}-worker",
         "gemini_secret": f"{prefix}/gemini-api-key",
@@ -263,16 +264,16 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
         tags,
     )
     request_dlq_arn = sqs_utils.queue_arn(sqs, request_dlq_url)
-    result_dlq_url = sqs_utils.ensure_queue(
+    response_dlq_url = sqs_utils.ensure_queue(
         sqs,
         QueueSpec(
-            names["result_dlq"], data_kms_arn, 300, ctx.config.retention.queue_message_retention_seconds, None, 0, ()
+            names["response_dlq"], data_kms_arn, 300, ctx.config.retention.queue_message_retention_seconds, None, 0, ()
         ),
         tags,
     )
-    result_dlq_arn = sqs_utils.queue_arn(sqs, result_dlq_url)
+    response_dlq_arn = sqs_utils.queue_arn(sqs, response_dlq_url)
     _record(manifest, "request_dlq", resource_type="sqs.queue", identifier=request_dlq_url, arn=request_dlq_arn)
-    _record(manifest, "result_dlq", resource_type="sqs.queue", identifier=result_dlq_url, arn=result_dlq_arn)
+    _record(manifest, "response_dlq", resource_type="sqs.queue", identifier=response_dlq_url, arn=response_dlq_arn)
 
     request_queue_url = sqs_utils.ensure_queue(
         sqs,
@@ -287,14 +288,14 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
         ),
         tags,
     )
-    result_queue_url = sqs_utils.ensure_queue(
+    response_queue_url = sqs_utils.ensure_queue(
         sqs,
         QueueSpec(
-            names["result_queue"],
+            names["response_queue"],
             data_kms_arn,
             300,
             ctx.config.retention.queue_message_retention_seconds,
-            result_dlq_arn,
+            response_dlq_arn,
             5,
             (task_role_arn,),
         ),
@@ -309,10 +310,10 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
     )
     _record(
         manifest,
-        "result_queue",
+        "response_queue",
         resource_type="sqs.queue",
-        identifier=result_queue_url,
-        arn=sqs_utils.queue_arn(sqs, result_queue_url),
+        identifier=response_queue_url,
+        arn=sqs_utils.queue_arn(sqs, response_queue_url),
     )
 
 
@@ -385,14 +386,14 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
     if ctx.config.storage_kms_key_arn:
         # The shared media bucket lives outside this repo and may be
         # encrypted with its own KMS key; kms_data only covers the
-        # request/result SQS queues provisioned here.
+        # request/response SQS queues provisioned here.
         kms_key_arns.append(ctx.config.storage_kms_key_arn)
     task_role_arn = iam_utils.ensure_role(
         iam,
         RoleSpec(
             names["task_role"],
             trust,
-            "ECS task role: S3/SQS/KMS/task-protection least privilege",
+            "ECS task role: S3/SQS/KMS/task-protection/AI-usage-logs least privilege",
             {
                 "s3": ecs_task_s3_policy(
                     storage_bucket_arn=storage_bucket_arn,
@@ -400,13 +401,19 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
                 ),
                 "sqs": ecs_task_sqs_policy(
                     request_queue_arn=manifest.resources["request_queue"].arn,
-                    result_queue_arn=manifest.resources["result_queue"].arn,
+                    response_queue_arn=manifest.resources["response_queue"].arn,
                 ),
                 "kms": ecs_task_kms_policy(
                     read_key_arns=kms_key_arns,
                     write_key_arns=kms_key_arns,
                 ),
                 "task_protection": ecs_task_protection_policy(cluster_arn=cluster_arn),
+                "ai_usage_logs": ecs_task_ai_usage_logs_policy(
+                    log_group_arn=(
+                        f"arn:aws:logs:{ctx.config.region}:{account_id}:"
+                        f"log-group:{ctx.config.custom_ai_logs_group_name}:*"
+                    ),
+                ),
             },
         ),
         tags,
@@ -419,7 +426,7 @@ def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, 
     return {
         "AWS_STORAGE_BUCKET_NAME": ctx.config.storage_bucket_name,
         "REQUEST_QUEUE_URL": manifest.resources["request_queue"].identifier,
-        "RESULT_QUEUE_URL": manifest.resources["result_queue"].identifier,
+        "RESPONSE_QUEUE_URL": manifest.resources["response_queue"].identifier,
         "AWS_REGION": ctx.config.region,
         "STAGE": ctx.config.stage,
         "ORGANIZATION_ID": ctx.config.organization_id,
@@ -430,6 +437,8 @@ def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, 
         "HEARTBEAT_INTERVAL_SECONDS": "90",
         "POLL_WAIT_TIME_SECONDS": "20",
         "PRESIGN_EXPIRES_IN_SECONDS": "3600",
+        "CUSTOM_AI_LOGS_GROUP_NAME": ctx.config.custom_ai_logs_group_name,
+        "CUSTOM_AI_LOGS_STREAM_NAME": ctx.config.stage,
         "ECS_CLUSTER": names["cluster"],
         "LOG_LEVEL": "INFO",
     }
@@ -515,10 +524,10 @@ def _alarm_specs(ctx: OrchestratorContext, manifest: DeploymentManifest, names: 
             (),
         ),
         AlarmSpec(
-            f"{prefix}-result-dlq-not-empty",
+            f"{prefix}-response-dlq-not-empty",
             "AWS/SQS",
             "ApproximateNumberOfMessagesVisible",
-            {"QueueName": names["result_dlq"]},
+            {"QueueName": names["response_dlq"]},
             "GreaterThanThreshold",
             0.0,
             1,
@@ -736,6 +745,50 @@ def plan(ctx: OrchestratorContext) -> dict[str, str]:
     return summary
 
 
+def build_outputs(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> dict[str, Any]:
+    """Flattened, buildspec-ready summary of every resource this apply() created.
+
+    Meant to be captured (e.g. to a file) before ``infra/aws`` is deleted from
+    the repo, so the identifiers/ARNs needed to hand-write a manual,
+    provisioner-free buildspec are not lost. ``environment`` reuses
+    ``_worker_environment`` so it matches exactly what the real task
+    definition was registered with; ``raw_manifest_resources`` keeps every
+    other resource available for audit even though only the ``ecr``/``ecs``
+    blocks are needed to redeploy without this provisioner.
+    """
+
+    account_id = ctx.config.account_id
+    return {
+        "account_id": account_id,
+        "region": ctx.config.region,
+        "resource_prefix": ctx.config.resource_prefix,
+        "ecr": {
+            "repository_name": names["ecr_repository"],
+            "repository_uri": f"{account_id}.dkr.ecr.{ctx.config.region}.amazonaws.com/{names['ecr_repository']}",
+        },
+        "ecs": {
+            "cluster_name": names["cluster"],
+            "service_name": names["service"],
+            "task_family": names["task_family"],
+            "container_name": "worker",
+            "execution_role_arn": manifest.resources["execution_role"].arn,
+            "task_role_arn": manifest.resources["task_role"].arn,
+            "log_group": names["log_group"],
+            "cpu": ctx.config.sizing.task_cpu,
+            "memory": ctx.config.sizing.task_memory,
+            "ephemeral_storage_gib": ctx.config.sizing.ephemeral_storage_gib,
+            "subnet_ids": [
+                manifest.resources["private_subnet_0"].identifier,
+                manifest.resources["private_subnet_1"].identifier,
+            ],
+            "security_group_ids": [manifest.resources["security_group"].identifier],
+        },
+        "secrets": {"GEMINI_API_KEY": manifest.resources["gemini_secret"].arn},
+        "environment": _worker_environment(ctx, manifest, names),
+        "raw_manifest_resources": manifest.to_dict()["resources"],
+    }
+
+
 def apply(ctx: OrchestratorContext) -> DeploymentManifest:
     state_store = _build_state_store(ctx)
     manifest = state_store.load(
@@ -773,7 +826,7 @@ _STEP_ORDER_INDEX = {
     "internet_gateway": 0, "nat_gateway": 0, "public_route_table": 0, "private_route_table": 0,
     "security_group": 0, "s3_gateway_endpoint": 0,
     "kms_data": 1, "kms_secrets": 1, "kms_logs": 1,
-    "request_dlq": 2, "result_dlq": 2, "request_queue": 2, "result_queue": 2,
+    "request_dlq": 2, "response_dlq": 2, "request_queue": 2, "response_queue": 2,
     "log_group": 3, "ecr_repository": 4, "gemini_secret": 5,
     "execution_role": 6, "task_role": 6,
     "cluster": 7, "task_definition": 7, "service": 7,

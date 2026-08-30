@@ -19,8 +19,8 @@ from .fair_limiter import FairGeminiLimiter
 from .task_protection import TaskProtection
 from .visibility_heartbeat import VisibilityHeartbeat
 
-REQUEST_MESSAGE_TYPE = "VIDEO_ANALYSIS_REQUEST"
-RESULT_MESSAGE_TYPE = "VIDEO_ANALYSIS_RESPONSE"
+REQUEST_MESSAGE_TYPE = "AI_ANALYSIS_REQUEST"
+RESULT_MESSAGE_TYPE = "AI_ANALYSIS_RESPONSE"
 RESULT_KEY_TEMPLATE = (
     "{stage}/media/ai_integrity_review_results/"
     "{org_assess_id}/{attempt_user_id}/{review_id}/evidence_bundle.json"
@@ -51,6 +51,12 @@ class LoggerFactory(Protocol):
     def __call__(self, review_id: str) -> Any: ...
 
 
+class AiUsageLoggerFactory(Protocol):
+    def __call__(
+        self, *, review_id: str, org_assess_id: str, attempt_user_id: str
+    ) -> Any: ...
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerContext:
     stage: str
@@ -59,11 +65,12 @@ class WorkerContext:
     request_store: ObjectStoreWithHead
     result_store: ObjectStoreWithHead
     request_queue: WorkerSqsClient
-    result_queue: WorkerSqsClient
+    response_queue: WorkerSqsClient
     gemini: Any
     limiter: FairGeminiLimiter
     task_protection: TaskProtection
     make_logger: LoggerFactory
+    make_ai_usage_logger: AiUsageLoggerFactory
     heartbeat_interval_seconds: int
     visibility_timeout_seconds: int
 
@@ -88,7 +95,7 @@ async def _publish_result(
             "error_message": error_message,
         }
     )
-    await ctx.result_queue.send(body)
+    await ctx.response_queue.send(body)
 
 
 async def _run_and_publish(
@@ -117,6 +124,11 @@ async def _run_and_publish(
                     logger=logger,
                     media_uri_provider=ctx.media_store,
                     organization_id=ctx.organization_id,
+                    ai_usage_logger=ctx.make_ai_usage_logger(
+                        review_id=payload.review_id,
+                        org_assess_id=payload.org_assess_id,
+                        attempt_user_id=payload.attempt_user_id,
+                    ),
                 )
                 bundle = await run_integrity_review(review_request, deps)
             except Exception as error:  # noqa: BLE001 - publish FAILURE for any pipeline error

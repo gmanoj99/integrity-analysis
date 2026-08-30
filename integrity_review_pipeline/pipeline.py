@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from .adapters.ai_usage_logger import STEP_DELIBERATION
 from .behavioral_pipeline import BehavioralArtifacts, decode_rrweb_chunks, run_behavioral_analysis
 from .contracts.evidence import EvidenceType, ExamMode
 from .contracts.evidence_bundle import EvidenceBundle, MediaIndexEntry
@@ -18,12 +19,14 @@ from .deliberation import (
 from .deps import PipelineDeps
 from .evidence_bundle import EvidenceBundleInput, assemble_evidence_bundle
 from .findings.contracts import EvidenceFinding, VideoObservationWindow
+from .gemini_call import generate_and_log
 from .perception import (
     build_perception_bundle,
     build_screen_perception_bundle,
     process_perception_chunk_job,
 )
 from .perception.perception_engine import compute_perception_version_hash
+from .prompts.deliberation import DELIBERATION_PROMPT_VERSION
 from .prompts.shared import DEFAULT_GEMINI_PRO_MODEL
 from .timeline import build_master_timeline
 
@@ -189,17 +192,20 @@ async def run_integrity_review(
         baseline_version_hash=behavioral.baseline.baseline_version,
     )
     prompt = build_deliberation_prompt(deliberation_input)
-    async with deps.limiter:
-        raw_response = await deps.gemini.generate(
-            model=DEFAULT_GEMINI_PRO_MODEL,
-            contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config={
-                "temperature": 0,
-                "maxOutputTokens": 16_384,
-                "thinkingConfig": {"thinkingBudget": 1_024},
-                "responseMimeType": "application/json",
-            },
-        )
+    raw_response = await generate_and_log(
+        deps,
+        step=STEP_DELIBERATION,
+        model=DEFAULT_GEMINI_PRO_MODEL,
+        model_version=DELIBERATION_PROMPT_VERSION,
+        contents=[{"role": "user", "parts": [{"text": prompt}]}],
+        config={
+            "temperature": 0,
+            "maxOutputTokens": 16_384,
+            "thinkingConfig": {"thinkingBudget": 1_024},
+            "responseMimeType": "application/json",
+        },
+        extra_meta={},
+    )
     raw_text = raw_response.get("text")
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise RuntimeError("Gemini deliberation returned no JSON text")

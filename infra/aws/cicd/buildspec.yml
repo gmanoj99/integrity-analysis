@@ -15,7 +15,7 @@ phases:
     commands:
       - pip install --no-cache-dir .
       - export AWS_REGION="ap-south-1"
-      - export ECR_REPOSITORY_NAME="integrity-review-beta-worker"
+      - export ECR_REPOSITORY_NAME="nw-assessments-ai-analysis-beta-worker"
       - export CONFIG="infra/aws/config/beta.json"
       - export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
       - export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -33,3 +33,12 @@ phases:
   post_build:
     commands:
       - python -m infra.aws.cli status --config "${CONFIG}" --account-id "${AWS_ACCOUNT_ID}" --deep
+      - python -m infra.aws.cli outputs --config "${CONFIG}" --account-id "${AWS_ACCOUNT_ID}" --out infra-outputs.json
+
+# infra-outputs.json (resource identifiers/ARNs/env vars for every service this
+# provisioner created) is captured as a build artifact on every run, so it can
+# be used to hand-write a manual, provisioner-free buildspec (see
+# buildspec.manual.yml) before infra/aws is eventually deleted from the repo.
+artifacts:
+  files:
+    - infra-outputs.json

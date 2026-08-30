@@ -7,7 +7,13 @@ import logging
 import os
 import signal
 
-from ..adapters import GoogleGeminiClient, S3ObjectStore, SqsClient, StructuredLogger
+from ..adapters import (
+    CloudWatchAiUsageLoggerFactory,
+    GoogleGeminiClient,
+    S3ObjectStore,
+    SqsClient,
+    StructuredLogger,
+)
 from .config import WorkerConfig
 from .fair_limiter import FairGeminiLimiter
 from .message_processor import WorkerContext, handle_message
@@ -29,7 +35,7 @@ def _build_context(config: WorkerConfig) -> WorkerContext:
         request_store=store,
         result_store=store,
         request_queue=SqsClient(config.request_queue_url, region_name=config.aws_region),
-        result_queue=SqsClient(config.result_queue_url, region_name=config.aws_region),
+        response_queue=SqsClient(config.response_queue_url, region_name=config.aws_region),
         gemini=GoogleGeminiClient(config.gemini_api_key),
         limiter=FairGeminiLimiter(
             global_limit=config.gemini_task_limit,
@@ -37,6 +43,11 @@ def _build_context(config: WorkerConfig) -> WorkerContext:
         ),
         task_protection=TaskProtection(logger=StructuredLogger("task-protection")),
         make_logger=StructuredLogger,
+        make_ai_usage_logger=CloudWatchAiUsageLoggerFactory(
+            log_group_name=config.custom_ai_logs_group_name,
+            log_stream_name=config.custom_ai_logs_stream_name,
+            region_name=config.aws_region,
+        ),
         heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         visibility_timeout_seconds=config.visibility_timeout_seconds,
     )

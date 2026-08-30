@@ -1,10 +1,11 @@
-"""Command line entrypoint: bootstrap, plan, apply, status, destroy.
+"""Command line entrypoint: bootstrap, plan, apply, status, outputs, destroy.
 
 Usage:
     python -m infra.aws.cli bootstrap --config infra/aws/config/beta.json
     python -m infra.aws.cli plan      --config infra/aws/config/beta.json
     python -m infra.aws.cli apply     --config infra/aws/config/beta.json --image-tag <sha> --yes
     python -m infra.aws.cli status    --config infra/aws/config/beta.json --deep
+    python -m infra.aws.cli outputs   --config infra/aws/config/beta.json --out infra-outputs.json
     python -m infra.aws.cli destroy   --config infra/aws/config/beta.json --yes
 """
 
@@ -13,19 +14,21 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from typing import Any
 
 from . import orchestrator
 from .config import EnvironmentConfig, load_environment_config
 from .session import SessionRequest, build_session
 from .session import client as make_client
+from .state_store import StateStore, config_hash
 from .status import run_status_checks
 from .utils import kms_utils
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="infra.aws.cli")
-    parser.add_argument("command", choices=["bootstrap", "plan", "apply", "status", "destroy"])
+    parser.add_argument("command", choices=["bootstrap", "plan", "apply", "status", "outputs", "destroy"])
     parser.add_argument("--config", required=True, help="Path to the environment JSON config")
     parser.add_argument("--account-id", help="Override account_id from the config file")
     parser.add_argument("--region", help="Override region from the config file")
@@ -37,6 +40,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--image-tag", help="Commit-SHA image tag; required for apply")
     parser.add_argument("--deep", action="store_true", help="Run the full status check suite")
     parser.add_argument("--yes", action="store_true", help="Skip the interactive confirmation prompt")
+    parser.add_argument("--out", help="For 'outputs': also write the result JSON to this local file path")
     return parser.parse_args(argv)
 
 
@@ -119,6 +123,19 @@ def main(argv: list[str] | None = None) -> int:
         report = run_status_checks(ctx, deep=args.deep)
         print(json.dumps(report, indent=2))
         return 0 if report["overall"] == "PASS" else 1
+
+    if args.command == "outputs":
+        state_store = StateStore(
+            s3_client=ctx.client("s3"), state_bucket=ctx.state_bucket, kms_key_arn=ctx.state_kms_key_arn
+        )
+        manifest = state_store.load(config.resource_prefix, config_hash_value=config_hash(asdict(config)))
+        outputs = orchestrator.build_outputs(ctx, manifest, orchestrator.resource_names(config))
+        rendered = json.dumps(outputs, indent=2)
+        print(rendered)
+        if args.out:
+            with open(args.out, "w") as f:
+                f.write(rendered + "\n")
+        return 0
 
     if args.command == "apply":
         if not args.image_tag:

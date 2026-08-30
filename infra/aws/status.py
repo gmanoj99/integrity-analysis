@@ -49,7 +49,7 @@ def _check_storage_bucket(ctx: OrchestratorContext) -> dict[str, Any]:
 def _check_queues(ctx: OrchestratorContext, names: dict[str, str]) -> list[dict[str, Any]]:
     sqs = ctx.client("sqs")
     checks = []
-    for key in ("request_queue", "result_queue", "request_dlq", "result_dlq"):
+    for key in ("request_queue", "response_queue", "request_dlq", "response_dlq"):
         try:
             queue_url = sqs.get_queue_url(QueueName=names[key])["QueueUrl"]
             attributes = sqs.get_queue_attributes(

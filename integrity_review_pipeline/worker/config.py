@@ -17,7 +17,7 @@ def _require_env(name: str) -> str:
 class WorkerConfig:
     storage_bucket: str
     request_queue_url: str
-    result_queue_url: str
+    response_queue_url: str
     aws_region: str
     gemini_api_key: str
     organization_id: str
@@ -29,17 +29,20 @@ class WorkerConfig:
     heartbeat_interval_seconds: int = 90
     poll_wait_time_seconds: int = 20
     presign_expires_in_seconds: int = 3_600
+    custom_ai_logs_group_name: str = "custom-ai-logs"
+    custom_ai_logs_stream_name: str = "beta"
 
     @classmethod
     def from_env(cls) -> WorkerConfig:
+        stage = os.environ.get("STAGE", "beta")
         return cls(
             storage_bucket=_require_env("AWS_STORAGE_BUCKET_NAME"),
             request_queue_url=_require_env("REQUEST_QUEUE_URL"),
-            result_queue_url=_require_env("RESULT_QUEUE_URL"),
+            response_queue_url=_require_env("RESPONSE_QUEUE_URL"),
             aws_region=os.environ.get("AWS_REGION", "ap-south-1"),
             gemini_api_key=_require_env("GEMINI_API_KEY"),
             organization_id=os.environ.get("ORGANIZATION_ID", "local"),
-            stage=os.environ.get("STAGE", "beta"),
+            stage=stage,
             max_concurrent_reviews=int(os.environ.get("MAX_CONCURRENT_REVIEWS", "4")),
             gemini_task_limit=int(os.environ.get("GEMINI_TASK_LIMIT", "24")),
             gemini_per_review_limit=int(os.environ.get("GEMINI_PER_REVIEW_LIMIT", "12")),
@@ -49,4 +52,8 @@ class WorkerConfig:
             presign_expires_in_seconds=int(
                 os.environ.get("PRESIGN_EXPIRES_IN_SECONDS", "3600")
             ),
+            custom_ai_logs_group_name=os.environ.get(
+                "CUSTOM_AI_LOGS_GROUP_NAME", "custom-ai-logs"
+            ),
+            custom_ai_logs_stream_name=os.environ.get("CUSTOM_AI_LOGS_STREAM_NAME", stage),
         )
