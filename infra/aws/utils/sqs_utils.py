@@ -9,7 +9,7 @@ from botocore.exceptions import ClientError
 
 from ..specs import QueueSpec
 
-LONG_POLL_WAIT_TIME_SECONDS = "20"
+LONG_POLL_WAIT_TIME_SECONDS = "10"
 
 
 def _queue_url(client: Any, name: str) -> str | None:
