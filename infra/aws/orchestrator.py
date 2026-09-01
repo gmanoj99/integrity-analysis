@@ -1,10 +1,10 @@
 """Ordered, idempotent provisioning of the isolated ECS worker test stack.
 
-``bootstrap`` creates the one-time state backend (S3 state bucket).
-``apply`` provisions every application resource in dependency order, saving
-the manifest after each step and rolling back only what *this* apply() call
-created if a later step fails. ``destroy`` deletes everything this tool has
-ever created, in reverse order. ``plan`` and ``status`` are read-only.
+``apply`` provisions every application resource in dependency order and
+keeps the inventory in memory for this run only. On a first-apply failure
+it rolls back only what *this* apply() call created. ``destroy`` requires
+that in-memory inventory and is a no-op without it. ``plan`` and
+``status`` are read-only.
 """
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ from .policies import (
 from .session import client as make_client
 from .specs import (
     AlarmSpec,
-    BucketSpec,
     ClusterSpec,
     ContainerSpec,
     InternetGatewaySpec,
@@ -52,7 +51,7 @@ from .specs import (
     LogGroupSpec,
     VpcSpec,
 )
-from .state_store import DeploymentManifest, ResourceRecord, StateStore, config_hash
+from .state_store import DeploymentManifest, ResourceRecord, config_hash
 from .utils import (
     autoscaling_utils,
     cloudwatch_utils,
@@ -97,8 +96,6 @@ _STEP_ORDER = [
 class OrchestratorContext:
     config: EnvironmentConfig
     session: boto3.Session
-    state_bucket: str
-    state_kms_key_arn: str
     image_tag: str
 
     def client(self, service_name: str) -> Any:
@@ -825,36 +822,6 @@ _STEPS: dict[str, Callable[[OrchestratorContext, DeploymentManifest, dict[str, s
 }
 
 
-def _build_state_store(ctx: OrchestratorContext) -> StateStore:
-    return StateStore(
-        s3_client=ctx.client("s3"),
-        state_bucket=ctx.state_bucket,
-        kms_key_arn=ctx.state_kms_key_arn,
-    )
-
-
-def bootstrap(ctx: OrchestratorContext) -> None:
-    """One-time setup: encrypted state bucket and state KMS key."""
-
-    s3 = ctx.client("s3")
-    kms = ctx.client("kms")
-    tags = ctx.config.resolved_tags()
-
-    state_kms_arn = kms_utils.ensure_key(
-        kms,
-        KmsKeySpec(
-            f"{ctx.config.resource_prefix}-state",
-            "Terraform-free provisioner state encryption",
-            _kms_key_policy_for(ctx, []),
-        ),
-    )
-    s3_utils.ensure_bucket(
-        s3,
-        BucketSpec(ctx.state_bucket, ctx.config.region, state_kms_arn, 0, ()),
-        tags,
-    )
-
-
 def plan(ctx: OrchestratorContext) -> dict[str, str]:
     """Read-only summary: which top-level resources already exist."""
 
@@ -924,21 +891,24 @@ def build_outputs(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
 
 
 def apply(ctx: OrchestratorContext) -> DeploymentManifest:
-    state_store = _build_state_store(ctx)
-    manifest = state_store.load(
-        ctx.config.resource_prefix, config_hash_value=config_hash(asdict(ctx.config))
-    )
     names = resource_names(ctx.config)
+    manifest = DeploymentManifest(
+        resource_prefix=ctx.config.resource_prefix,
+        config_hash=config_hash(asdict(ctx.config)),
+    )
     keys_before_this_apply = set(manifest.resources)
+    cluster_already_exists = any(
+        cluster["status"] == "ACTIVE"
+        for cluster in ctx.client("ecs").describe_clusters(clusters=[names["cluster"]])["clusters"]
+    )
     try:
         for step_name in _STEP_ORDER:
             _LOGGER.info("apply: running step %s", step_name)
             _STEPS[step_name](ctx, manifest, names)
-            state_store.save(manifest)
     except Exception:
         _LOGGER.error("apply: step failed, rolling back resources created by this run", exc_info=True)
-        _rollback(ctx, manifest, created_this_run=set(manifest.resources) - keys_before_this_apply)
-        state_store.save(manifest)
+        if not cluster_already_exists:
+            _rollback(ctx, manifest, created_this_run=set(manifest.resources) - keys_before_this_apply)
         raise
     return manifest
 
@@ -1112,22 +1082,13 @@ def _teardown_kms(ctx: OrchestratorContext, manifest: DeploymentManifest) -> Non
 
 
 def destroy(ctx: OrchestratorContext) -> None:
-    """Delete every tool-managed resource, in reverse dependency order."""
+    """Delete every tool-managed resource, in reverse dependency order.
 
-    state_store = _build_state_store(ctx)
-    manifest = state_store.load(
-        ctx.config.resource_prefix, config_hash_value=config_hash(asdict(ctx.config))
+    Inventory is not persisted, so this is a no-op unless a future caller
+    supplies a manifest collected from ``apply``.
+    """
+
+    _LOGGER.warning(
+        "destroy: no persisted inventory for %s; refusing to guess resources to delete",
+        ctx.config.resource_prefix,
     )
-    managed_keys = {
-        key
-        for key, record in manifest.resources.items()
-        if record.managed_by_tool
-        and record.status != "destroyed"
-        and _STEP_ORDER_INDEX.get(key.split(".")[0], -1) not in {0, 1}
-    }
-    _rollback(ctx, manifest, created_this_run=managed_keys)
-    state_store.save(manifest)
-    _teardown_network(ctx, manifest)
-    state_store.save(manifest)
-    _teardown_kms(ctx, manifest)
-    state_store.save(manifest)

@@ -14,16 +14,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from typing import Any
 
 from . import orchestrator
 from .config import EnvironmentConfig, load_environment_config
 from .session import SessionRequest, build_session
-from .session import client as make_client
-from .state_store import StateStore, config_hash
 from .status import run_status_checks
-from .utils import kms_utils
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -77,13 +73,9 @@ def _build_context(config: EnvironmentConfig, args: argparse.Namespace) -> orche
             session_name=f"{config.resource_prefix}-provisioner",
         )
     )
-    state_bucket = f"{config.resource_prefix}-tf-state-{config.account_id}"
-    state_kms_arn = kms_utils.key_arn_for_alias(make_client(session, "kms"), f"{config.resource_prefix}-state")
     return orchestrator.OrchestratorContext(
         config=config,
         session=session,
-        state_bucket=state_bucket,
-        state_kms_key_arn=state_kms_arn or "",
         image_tag=args.image_tag or "untagged",
     )
 
@@ -93,24 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     config = _load_config(args)
 
     if args.command == "bootstrap":
-        session = build_session(
-            SessionRequest(
-                region=config.region,
-                expected_account_id=config.account_id,
-                profile_name=args.profile,
-                assume_role_arn=args.assume_role_arn,
-                session_name=f"{config.resource_prefix}-provisioner",
-            )
-        )
-        ctx = orchestrator.OrchestratorContext(
-            config=config,
-            session=session,
-            state_bucket=f"{config.resource_prefix}-tf-state-{config.account_id}",
-            state_kms_key_arn="",
-            image_tag="unused",
-        )
-        orchestrator.bootstrap(ctx)
-        print("bootstrap: state backend ready")
+        print("bootstrap: no S3 state backend; apply prints the inventory manifest")
         return 0
 
     ctx = _build_context(config, args)
@@ -125,31 +100,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report["overall"] == "PASS" else 1
 
     if args.command == "outputs":
-        state_store = StateStore(
-            s3_client=ctx.client("s3"), state_bucket=ctx.state_bucket, kms_key_arn=ctx.state_kms_key_arn
+        print(
+            "outputs: inventory is not stored in S3; use the manifest printed by apply",
+            file=sys.stderr,
         )
-        manifest = state_store.load(config.resource_prefix, config_hash_value=config_hash(asdict(config)))
-        outputs = orchestrator.build_outputs(ctx, manifest, orchestrator.resource_names(config))
-        rendered = json.dumps(outputs, indent=2)
-        print(rendered)
-        if args.out:
-            with open(args.out, "w") as f:
-                f.write(rendered + "\n")
-        return 0
+        return 2
 
     if args.command == "apply":
         if not args.image_tag:
             print("apply requires --image-tag <git-commit-sha>", file=sys.stderr)
             return 2
         _confirm("apply", config, skip_prompt=args.yes)
-        orchestrator.apply(ctx)
+        manifest = orchestrator.apply(ctx)
+        print(json.dumps(manifest.to_dict(), indent=2))
         print("apply: complete")
         return 0
 
     if args.command == "destroy":
         _confirm("destroy", config, skip_prompt=args.yes)
         orchestrator.destroy(ctx)
-        print("destroy: complete")
+        print("destroy: no persisted inventory; nothing deleted")
         return 0
 
     return 2

@@ -76,15 +76,6 @@ class KmsKeySpec:
 
 
 @dataclass(frozen=True, slots=True)
-class BucketSpec:
-    name: str
-    region: str
-    kms_key_arn: str
-    expiration_days: int
-    allowed_role_arns: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class QueueSpec:
     name: str
     kms_key_id: str

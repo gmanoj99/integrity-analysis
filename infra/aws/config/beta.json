@@ -33,7 +33,7 @@
     "ecr_max_tagged_images": 20
   },
   "tags": {
-    "Project": "topin",
-  "Environment": "beta"
+    "project_name": "topin",
+    "environment": "beta"
   }
 }

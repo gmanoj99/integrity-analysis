@@ -7,13 +7,11 @@ desired count above zero.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 from botocore.exceptions import ClientError
 
 from .config import ALLOWED_ENVIRONMENTS
 from .orchestrator import OrchestratorContext, resource_names
-from .state_store import StateStore, config_hash
 from .utils import iam_utils
 
 
@@ -104,17 +102,14 @@ def run_status_checks(ctx: OrchestratorContext, *, deep: bool) -> dict[str, Any]
         checks.extend(_check_queues(ctx, names))
         checks.append(_check_ecs_service(ctx, names))
 
-        state_store = StateStore(
-            s3_client=ctx.client("s3"),
-            state_bucket=ctx.state_bucket,
-            kms_key_arn=ctx.state_kms_key_arn,
-        )
-        manifest = state_store.load(
-            ctx.config.resource_prefix, config_hash_value=config_hash(asdict(ctx.config))
-        )
-        task_role = manifest.resources.get("task_role")
-        if task_role is not None:
-            checks.append(_check_task_role_least_privilege(ctx, task_role.arn))
+        try:
+            task_role_arn = ctx.client("iam").get_role(RoleName=names["task_role"])["Role"]["Arn"]
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "NoSuchEntity":
+                raise
+            checks.append(_check("iam.task_role_scope", False, "task role not found"))
+        else:
+            checks.append(_check_task_role_least_privilege(ctx, task_role_arn))
 
     overall = "PASS" if all(check["passed"] for check in checks) else "FAIL"
     return {"overall": overall, "checks": checks}
