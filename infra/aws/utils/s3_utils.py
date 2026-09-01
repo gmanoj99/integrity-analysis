@@ -95,7 +95,8 @@ def ensure_bucket(client: Any, spec: BucketSpec, tags: dict[str, str]) -> str:
     """Create (if missing) and fully harden the bucket. Returns the bucket ARN."""
 
     if not bucket_exists(client, spec.name):
-        _create_bucket(client, spec.name, spec.region)
+        raise RuntimeError(
+        f"S3 bucket {spec.name!r} does not exist; this tool will not create buckets")
     _harden_bucket(client, spec)
     _put_tls_only_policy(client, spec)
     if spec.expiration_days > 0:

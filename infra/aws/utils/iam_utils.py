@@ -42,6 +42,26 @@ def ensure_role(client: Any, spec: RoleSpec, tags: dict[str, str]) -> str:
     return role["Arn"]
 
 
+def put_inline_policy(
+    client: Any, *, role_name: str, policy_name: str, policy_document: dict[str, Any]
+) -> None:
+    """Attach/update one inline policy on a role this tool does not create or own the trust policy of."""
+
+    client.put_role_policy(
+        RoleName=role_name, PolicyName=policy_name, PolicyDocument=json.dumps(policy_document)
+    )
+
+
+def put_user_inline_policy(
+    client: Any, *, user_name: str, policy_name: str, policy_document: dict[str, Any]
+) -> None:
+    """Attach/update one inline policy on an IAM user this tool does not create or own."""
+
+    client.put_user_policy(
+        UserName=user_name, PolicyName=policy_name, PolicyDocument=json.dumps(policy_document)
+    )
+
+
 def validate_policy_document(access_analyzer_client: Any, policy_document: dict[str, Any]) -> list[dict[str, Any]]:
     """Run IAM Access Analyzer policy validation; returns any ERROR/SECURITY_WARNING findings."""
 

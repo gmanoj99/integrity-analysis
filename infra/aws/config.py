@@ -44,7 +44,6 @@ class SizingConfig:
 @dataclass(frozen=True, slots=True)
 class RetentionConfig:
     log_retention_days: int
-    bucket_expiration_days: int
     queue_message_retention_seconds: int
     ecr_max_tagged_images: int
 
@@ -55,12 +54,12 @@ class EnvironmentConfig:
     region: str
     environment: str
     project: str
-    owner: str
-    cost_center: str
     stage: str
-    organization_id: str
     storage_bucket_name: str
     storage_kms_key_arn: str | None
+    codebuild_project_name: str
+    backend_iam_user_name: str
+    backend_lambda_function_name: str
     network: NetworkConfig
     sizing: SizingConfig
     retention: RetentionConfig
@@ -73,11 +72,6 @@ class EnvironmentConfig:
 
     def resolved_tags(self) -> dict[str, str]:
         return {
-            "Project": self.project,
-            "Environment": self.environment,
-            "Owner": self.owner,
-            "CostCenter": self.cost_center,
-            "ManagedBy": "infra.aws",
             **self.tags,
         }
 
@@ -115,7 +109,6 @@ def _build_sizing(data: dict[str, Any]) -> SizingConfig:
 def _build_retention(data: dict[str, Any]) -> RetentionConfig:
     return RetentionConfig(
         log_retention_days=int(_require(data, "log_retention_days")),
-        bucket_expiration_days=int(_require(data, "bucket_expiration_days")),
         queue_message_retention_seconds=int(_require(data, "queue_message_retention_seconds")),
         ecr_max_tagged_images=int(_require(data, "ecr_max_tagged_images")),
     )
@@ -151,12 +144,12 @@ def load_environment_config(
         region=raw.get("region", DEFAULT_REGION),
         environment=raw.get("environment", "beta"),
         project=_require(raw, "project"),
-        owner=_require(raw, "owner"),
-        cost_center=_require(raw, "cost_center"),
         stage=raw.get("stage", "beta"),
-        organization_id=raw.get("organization_id", "local"),
         storage_bucket_name=_require(raw, "storage_bucket_name"),
         storage_kms_key_arn=raw.get("storage_kms_key_arn"),
+        codebuild_project_name=_require(raw, "codebuild_project_name"),
+        backend_iam_user_name=_require(raw, "backend_iam_user_name"),
+        backend_lambda_function_name=_require(raw, "backend_lambda_function_name"),
         network=_build_network(_require(raw, "network")),
         sizing=_build_sizing(_require(raw, "sizing")),
         retention=_build_retention(_require(raw, "retention")),

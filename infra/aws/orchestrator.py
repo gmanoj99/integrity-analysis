@@ -16,6 +16,9 @@ import boto3
 
 from .config import EnvironmentConfig
 from .policies import (
+    backend_request_queue_send_policy,
+    backend_response_queue_receive_policy,
+    codebuild_manual_deploy_policy,
     ecs_task_ai_usage_logs_policy,
     ecs_task_execution_role_policy,
     ecs_task_kms_policy,
@@ -53,11 +56,13 @@ from .state_store import DeploymentManifest, ResourceRecord, StateStore, config_
 from .utils import (
     autoscaling_utils,
     cloudwatch_utils,
+    codebuild_utils,
     ec2_utils,
     ecr_utils,
     ecs_utils,
     iam_utils,
     kms_utils,
+    lambda_utils,
     logs_utils,
     s3_utils,
     secrets_manager_utils,
@@ -67,6 +72,10 @@ from .utils import (
 _LOGGER = logging.getLogger("infra.aws.orchestrator")
 _ECS_SERVICE_NAMESPACE = "ecs"
 _ECS_SCALABLE_DIMENSION = "ecs:service:DesiredCount"
+_CODEBUILD_DEPLOY_POLICY_NAME = "manual-deploy-worker"
+_BACKEND_SEND_POLICY_NAME = "AiAnalysisRequestQueueSend"
+_BACKEND_RECEIVE_POLICY_NAME = "AiAnalysisResponseQueueConsume"
+_BACKEND_RESPONSE_EVENT_SOURCE_BATCH_SIZE = 1
 _STEP_ORDER = [
     "network",
     "kms",
@@ -78,6 +87,9 @@ _STEP_ORDER = [
     "compute",
     "alarms",
     "autoscaling",
+    "codebuild_deploy_policy",
+    "backend_send_access",
+    "backend_receive_access",
 ]
 
 
@@ -429,7 +441,6 @@ def _worker_environment(ctx: OrchestratorContext, manifest: DeploymentManifest, 
         "RESPONSE_QUEUE_URL": manifest.resources["response_queue"].identifier,
         "AWS_REGION": ctx.config.region,
         "STAGE": ctx.config.stage,
-        "ORGANIZATION_ID": ctx.config.organization_id,
         "MAX_CONCURRENT_REVIEWS": str(sizing.max_concurrent_reviews),
         "GEMINI_TASK_LIMIT": str(sizing.gemini_task_limit),
         "GEMINI_PER_REVIEW_LIMIT": str(sizing.gemini_per_review_limit),
@@ -677,6 +688,126 @@ def _ensure_autoscaling(ctx: OrchestratorContext, manifest: DeploymentManifest, 
     _record(manifest, "alarm.scale-in-on-idle", resource_type="cloudwatch.alarm", identifier=scale_in_name, arn=None)
 
 
+def _ensure_codebuild_deploy_policy(
+    ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]
+) -> None:
+    """Keep the deploy-only policy on the CI project's *existing* execution role in sync.
+
+    The CodeBuild project named in config (``codebuild_project_name``) and its
+    execution role are provisioned outside this tool -- KV's CodeBuild runs
+    ``cicd/buildspec.manual.yml`` on every push. This step only looks that
+    role up and re-applies ``codebuild_manual_deploy_policy`` against it, so
+    the role never needs the broader infra-provisioning permissions this
+    tool's own roles use. It is intentionally excluded from rollback/destroy:
+    this tool does not own the CodeBuild role's lifecycle, only this one
+    inline policy on it.
+    """
+
+    role_arn = codebuild_utils.get_project_service_role_arn(
+        ctx.client("codebuild"), ctx.config.codebuild_project_name
+    )
+    role_name = role_arn.split("/")[-1]
+    policy_document = codebuild_manual_deploy_policy(
+        ecr_repository_arn=manifest.resources["ecr_repository"].arn,
+        ecs_service_arn=manifest.resources["service"].arn,
+        ecs_execution_role_arn=manifest.resources["execution_role"].arn,
+        ecs_task_role_arn=manifest.resources["task_role"].arn,
+    )
+    iam_utils.put_inline_policy(
+        ctx.client("iam"),
+        role_name=role_name,
+        policy_name=_CODEBUILD_DEPLOY_POLICY_NAME,
+        policy_document=policy_document,
+    )
+    _record(
+        manifest,
+        "codebuild_deploy_policy",
+        resource_type="iam.inline_policy",
+        identifier=f"{role_name}/{_CODEBUILD_DEPLOY_POLICY_NAME}",
+        arn=role_arn,
+    )
+
+
+def _ensure_backend_send_access(
+    ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]
+) -> None:
+    """Let the backend's existing SQS-send IAM user enqueue onto this stack's request queue.
+
+    That IAM user (the one the Django backend authenticates as via
+    ``CUSTOM_AWS_ACCESS_KEY_ID``/``SECRET``) is provisioned outside this
+    tool, so this only attaches a policy to it, never creating or deleting it.
+    """
+
+    account_id = ctx.config.account_id
+    user_name = ctx.config.backend_iam_user_name
+    policy_document = backend_request_queue_send_policy(
+        request_queue_arn=manifest.resources["request_queue"].arn,
+        kms_key_arn=manifest.resources["kms_data"].arn,
+    )
+    iam_utils.put_user_inline_policy(
+        ctx.client("iam"),
+        user_name=user_name,
+        policy_name=_BACKEND_SEND_POLICY_NAME,
+        policy_document=policy_document,
+    )
+    _record(
+        manifest,
+        "backend_send_policy",
+        resource_type="iam.inline_policy",
+        identifier=f"{user_name}/{_BACKEND_SEND_POLICY_NAME}",
+        arn=f"arn:aws:iam::{account_id}:user/{user_name}",
+    )
+
+
+def _ensure_backend_receive_access(
+    ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]
+) -> None:
+    """Let the backend's existing Lambda consume from this stack's response queue.
+
+    The Lambda function and its execution role are provisioned outside this
+    tool; this only attaches a policy to the role and wires up the queue
+    trigger, never creating or deleting the function or role itself.
+    """
+
+    lambda_client = ctx.client("lambda")
+    function_name = ctx.config.backend_lambda_function_name
+    response_queue_arn = manifest.resources["response_queue"].arn
+
+    role_arn = lambda_utils.get_function_execution_role_arn(lambda_client, function_name)
+    role_name = role_arn.split("/")[-1]
+    policy_document = backend_response_queue_receive_policy(
+        response_queue_arn=response_queue_arn,
+        kms_key_arn=manifest.resources["kms_data"].arn,
+    )
+    iam_utils.put_inline_policy(
+        ctx.client("iam"),
+        role_name=role_name,
+        policy_name=_BACKEND_RECEIVE_POLICY_NAME,
+        policy_document=policy_document,
+    )
+    _record(
+        manifest,
+        "backend_receive_policy",
+        resource_type="iam.inline_policy",
+        identifier=f"{role_name}/{_BACKEND_RECEIVE_POLICY_NAME}",
+        arn=role_arn,
+    )
+
+    mapping_uuid = lambda_utils.ensure_event_source_mapping(
+        lambda_client,
+        function_name=function_name,
+        event_source_arn=response_queue_arn,
+        batch_size=_BACKEND_RESPONSE_EVENT_SOURCE_BATCH_SIZE,
+    )
+    _record(
+        manifest,
+        "backend_event_source_mapping",
+        resource_type="lambda.event_source_mapping",
+        identifier=mapping_uuid,
+        arn=None,
+    )
+
+
 _STEPS: dict[str, Callable[[OrchestratorContext, DeploymentManifest, dict[str, str]], None]] = {
     "network": _ensure_network,
     "kms": _ensure_kms,
@@ -688,6 +819,9 @@ _STEPS: dict[str, Callable[[OrchestratorContext, DeploymentManifest, dict[str, s
     "compute": _ensure_compute,
     "alarms": _ensure_alarms,
     "autoscaling": _ensure_autoscaling,
+    "codebuild_deploy_policy": _ensure_codebuild_deploy_policy,
+    "backend_send_access": _ensure_backend_send_access,
+    "backend_receive_access": _ensure_backend_receive_access,
 }
 
 
@@ -881,6 +1015,11 @@ def _delete_resource(ctx: OrchestratorContext, record: ResourceRecord) -> None:
     # KMS keys and VPC networking are deliberately not force-deleted here:
     # keys are scheduled for deletion (7-day minimum) and network teardown
     # requires strict dependency ordering handled by `destroy()` directly.
+    # "iam.inline_policy" (CodeBuild deploy policy, backend send/receive
+    # policies) and "lambda.event_source_mapping" are also deliberately
+    # unhandled: those roles/users/functions belong to externally
+    # provisioned principals, so this tool never deletes them or anything
+    # attached to them.
 
 
 def _empty_and_delete_bucket(s3: Any, bucket_name: str) -> None:

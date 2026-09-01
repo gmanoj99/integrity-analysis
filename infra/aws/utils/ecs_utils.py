@@ -6,6 +6,8 @@ from typing import Any
 
 from ..specs import ClusterSpec, ServiceSpec, TaskDefinitionSpec
 
+_CONTAINER_INSIGHTS_SETTINGS = [{"name": "containerInsights", "value": "enabled"}]
+
 
 def ensure_cluster(client: Any, spec: ClusterSpec, tags: dict[str, str]) -> str:
     described = client.describe_clusters(clusters=[spec.name])["clusters"]
@@ -13,7 +15,9 @@ def ensure_cluster(client: Any, spec: ClusterSpec, tags: dict[str, str]) -> str:
     if active:
         return active[0]["clusterArn"]
     return client.create_cluster(
-        clusterName=spec.name, tags=[{"key": key, "value": value} for key, value in tags.items()]
+        clusterName=spec.name,
+        tags=[{"key": key, "value": value} for key, value in tags.items()],
+        settings=_CONTAINER_INSIGHTS_SETTINGS,
     )["cluster"]["clusterArn"]
 
 

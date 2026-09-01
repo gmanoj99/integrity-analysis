@@ -3,12 +3,12 @@
   "region": "ap-south-1",
   "environment": "beta",
   "project": "nw-assessments-ai-analysis",
-  "owner": "platform-team",
-  "cost_center": "eng-beta",
   "stage": "beta",
-  "organization_id": "local",
   "storage_bucket_name": "nxtwave-assessments-backend-nxtwave-media-static",
   "storage_kms_key_arn": null,
+  "codebuild_project_name": "nw_assessments_ai_analysis_backend_beta",
+  "backend_iam_user_name": "nxtwave-assessments-backend-nw-beta-s3-lambda",
+  "backend_lambda_function_name": "nxtwave-assessments-backend-topin_beta",
   "network": {
     "vpc_cidr_block": "10.91.0.0/16",
     "public_subnet_cidrs": ["10.91.0.0/24", "10.91.1.0/24"],
@@ -29,12 +29,11 @@
   },
   "retention": {
     "log_retention_days": 14,
-    "bucket_expiration_days": 30,
     "queue_message_retention_seconds": 345600,
-    "ecr_max_tagged_images": 10
+    "ecr_max_tagged_images": 20
   },
   "tags": {
-    "DataClassification": "beta-test-data",
-    "Expiry": "2027-12-31"
+    "Project": "topin",
+  "Environment": "beta"
   }
 }

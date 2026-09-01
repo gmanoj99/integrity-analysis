@@ -193,13 +193,120 @@ def ecs_task_kms_policy(*, read_key_arns: list[str], write_key_arns: list[str]) 
 
 
 def ecs_task_protection_policy(*, cluster_arn: str) -> dict[str, Any]:
+    task_resource_arn = cluster_arn.replace(":cluster/", ":task/", 1) + "/*"
     return _document(
         [
             _statement(
                 sid="AllowTaskProtectionOnTestCluster",
                 actions=["ecs:UpdateTaskProtection"],
-                resources=[f"{cluster_arn}/*"],
+                resources=[task_resource_arn],
             )
+        ]
+    )
+
+
+def codebuild_manual_deploy_policy(
+    *,
+    ecr_repository_arn: str,
+    ecs_service_arn: str,
+    ecs_execution_role_arn: str,
+    ecs_task_role_arn: str,
+) -> dict[str, Any]:
+    """Execution-role policy for the environment's CodeBuild project, scoped to
+    exactly what `cicd/buildspec.manual.yml` runs on every push-triggered build:
+    push a new worker image, then re-register and roll the ECS service onto it.
+
+    This is unrelated to the `ecs_task_*` policies above, which govern the
+    worker's own *runtime* role -- this one governs the CI *build* role.
+    It deliberately excludes every VPC/ECS/ECR/IAM create-or-delete action that
+    the old (now removed) `infrastructure_provisioner_policy` granted: initial
+    infra is provisioned once, by hand, via `infra.aws.cli`, not by this
+    CodeBuild project. Each environment has its own CodeBuild project and
+    execution role (e.g. beta's `nw_assessments_ai_analysis_backend_beta`), so
+    call this once per environment with that environment's own ARNs rather
+    than sharing one policy document across stages.
+    """
+    return _document(
+        [
+            _statement(
+                sid="AllowEcrAuth", actions=["ecr:GetAuthorizationToken"], resources=["*"]
+            ),
+            _statement(
+                sid="AllowEcrPushWorkerImage",
+                actions=[
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:UploadLayerPart",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:PutImage",
+                ],
+                resources=[ecr_repository_arn],
+            ),
+            _statement(
+                # Task-definition revision numbers are assigned by ECS on
+                # register, so this pair can't be scoped to a specific ARN.
+                sid="AllowTaskDefinitionDescribeAndRegister",
+                actions=["ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition"],
+                resources=["*"],
+            ),
+            _statement(
+                sid="AllowWorkerServiceUpdate",
+                actions=["ecs:UpdateService", "ecs:DescribeServices"],
+                resources=[ecs_service_arn],
+            ),
+            _statement(
+                sid="AllowPassEcsRolesOnRegister",
+                actions=["iam:PassRole"],
+                resources=[ecs_execution_role_arn, ecs_task_role_arn],
+                condition={"StringEquals": {"iam:PassedToService": ECS_TASKS_PRINCIPAL}},
+            ),
+        ]
+    )
+
+
+def backend_request_queue_send_policy(*, request_queue_arn: str, kms_key_arn: str) -> dict[str, Any]:
+    """Grants the backend's existing SQS-send IAM user just enough to enqueue AI-review requests.
+
+    That user is the one the Django backend authenticates as via
+    ``CUSTOM_AWS_ACCESS_KEY_ID``/``SECRET`` -- it is not provisioned by this
+    tool, so this policy only covers the send side of the request queue plus
+    the KMS actions SQS needs to encrypt on send.
+    """
+
+    return _document(
+        [
+            _statement(
+                sid="AllowRequestQueueSend",
+                actions=["sqs:SendMessage"],
+                resources=[request_queue_arn],
+            ),
+            _statement(
+                sid="AllowKmsForSend",
+                actions=["kms:GenerateDataKey", "kms:Decrypt"],
+                resources=[kms_key_arn],
+            ),
+        ]
+    )
+
+
+def backend_response_queue_receive_policy(*, response_queue_arn: str, kms_key_arn: str) -> dict[str, Any]:
+    """Grants the backend's existing Lambda execution role just enough to consume AI-review responses.
+
+    The Lambda function and its role are not provisioned by this tool, so
+    this policy only covers the receive side of the response queue plus the
+    KMS decrypt action the event-source mapping needs to poll it.
+    """
+
+    return _document(
+        [
+            _statement(
+                sid="AllowResponseQueueConsume",
+                actions=["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+                resources=[response_queue_arn],
+            ),
+            _statement(
+                sid="AllowKmsForReceive", actions=["kms:Decrypt"], resources=[kms_key_arn]
+            ),
         ]
     )
 
