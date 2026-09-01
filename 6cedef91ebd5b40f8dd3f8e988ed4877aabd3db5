@@ -1,0 +1,76 @@
+integrity_review_pipeline/seb_logs/contracts.py
+  d2e21ba0b12cab04 1-312
+integrity_review_pipeline/seb_logs/grammars/__init__.py
+  d2e21ba0b12cab04 1
+integrity_review_pipeline/seb_logs/grammars/cef_browser.py
+  d2e21ba0b12cab04 1-149
+integrity_review_pipeline/seb_logs/reduction/bulk_event_aggregator.py
+  d2e21ba0b12cab04 1-340
+integrity_review_pipeline/seb_logs/pipeline.py
+  d2e21ba0b12cab04 1-101
+run_seb_log_reduction.py
+  d2e21ba0b12cab04 1-186
+integrity_review_pipeline/seb_logs/reduction/session_reducer.py
+  d2e21ba0b12cab04 1-372,374-502
+integrity_review_pipeline/seb_logs/grammars/macos.py
+  d2e21ba0b12cab04 1-59
+integrity_review_pipeline/seb_logs/__init__.py
+  d2e21ba0b12cab04 1
+integrity_review_pipeline/seb_logs/deps.py
+  d2e21ba0b12cab04 1-63
+integrity_review_pipeline/seb_logs/manifest_parser.py
+  d2e21ba0b12cab04 1-80
+tests/test_seb_log_reduction.py
+  d2e21ba0b12cab04 1-384
+integrity_review_pipeline/seb_logs/grammars/windows_dotnet.py
+  d2e21ba0b12cab04 1-159
+integrity_review_pipeline/seb_logs/io.py
+  d2e21ba0b12cab04 1-77
+integrity_review_pipeline/seb_logs/reduction/__init__.py
+  d2e21ba0b12cab04 1
+integrity_review_pipeline/adapters/s3_object_store.py
+  d2e21ba0b12cab04 1-161
+integrity_review_pipeline/seb_logs/grammars/base.py
+  d2e21ba0b12cab04 1-71
+integrity_review_pipeline/seb_logs/reduction/noise_rules.py
+  d2e21ba0b12cab04 1-240
+integrity_review_pipeline/seb_logs/discovery.py
+  d2e21ba0b12cab04 1-216
+integrity_review_pipeline/seb_logs/reduction/signal_rules.py
+  d2e21ba0b12cab04 1-652
+integrity_review_pipeline/seb_logs/reduction/correlator.py
+  d2e21ba0b12cab04 1-228,230-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "6cedef91ebd5b40f8dd3f8e988ed4877aabd3db5",
+  "prompts": {
+    "41ee610497c497c7": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "944d7dfd-2767-427d-825c-7b0e39d1d905",
+        "model": "auto-smart"
+      },
+      "human_author": "Akshat-nxtwave <akshat.singh@nxtwave.co.in>",
+      "messages": [],
+      "total_additions": 415,
+      "total_deletions": 205,
+      "accepted_lines": 174,
+      "overriden_lines": 16
+    },
+    "d2e21ba0b12cab04": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "6c00c71e-9aba-4f05-a020-f3df69def786",
+        "model": "claude-opus-4-5"
+      },
+      "human_author": "Akshat-nxtwave <akshat.singh@nxtwave.co.in>",
+      "messages": [],
+      "total_additions": 4019,
+      "total_deletions": 5,
+      "accepted_lines": 4011,
+      "overriden_lines": 0
+    }
+  }
+}
