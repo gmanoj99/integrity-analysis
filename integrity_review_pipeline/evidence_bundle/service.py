@@ -115,6 +115,7 @@ def build_curated_track_b_observations(
                 section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
                 clip_ref=clip_ref,
                 detail=str(attr(finding, "reasoning", default="")),
+                evidence_strength=attr(finding, "evidence_strength", "evidenceStrength"),
             )
         )
     return sorted(cards, key=lambda c: c.timestamp_window_ms[0])

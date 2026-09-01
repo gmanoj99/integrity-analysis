@@ -130,6 +130,7 @@ class TrackBObservationCard(ContractModel):
     section_id: str | None = None
     clip_ref: ClipRef | None = None
     detail: str | None = None
+    evidence_strength: Literal["strong", "moderate", "thin"] | None = None
 
 
 class CorrelatedPatternEvent(ContractModel):
