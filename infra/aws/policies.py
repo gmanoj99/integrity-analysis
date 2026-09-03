@@ -72,8 +72,16 @@ def oidc_trust_policy(
 
 
 def ecs_task_execution_role_policy(
-    *, repository_arn: str, log_group_arn: str, gemini_secret_arn: str, kms_key_arns: list[str]
+    *, repository_arn: str, log_group_arn: str, gemini_ssm_parameter_prefix_arn: str
 ) -> dict[str, Any]:
+    """Execution role policy. ``gemini_ssm_parameter_prefix_arn`` is a wildcard ARN
+    (``.../nw-assessments-ai-analysis-beta-*``) so any future SSM parameter added
+    under this environment's naming prefix is automatically readable without a
+    policy change, while parameters outside the prefix stay inaccessible. The
+    Gemini API key uses the SSM default (AWS-managed) key, so no ``kms:Decrypt``
+    grant is required here -- see ``README.md`` / ``infra/aws/README`` notes.
+    """
+
     return _document(
         [
             _statement(
@@ -94,11 +102,10 @@ def ecs_task_execution_role_policy(
                 resources=[f"{log_group_arn}:*"],
             ),
             _statement(
-                sid="AllowGeminiSecretRead",
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[gemini_secret_arn],
+                sid="AllowGeminiSsmParameterRead",
+                actions=["ssm:GetParameters"],
+                resources=[gemini_ssm_parameter_prefix_arn],
             ),
-            _statement(sid="AllowKmsDecrypt", actions=["kms:Decrypt"], resources=kms_key_arns),
         ]
     )
 
@@ -175,23 +182,6 @@ def ecs_task_ai_usage_logs_policy(*, log_group_arn: str) -> dict[str, Any]:
     )
 
 
-def ecs_task_kms_policy(*, read_key_arns: list[str], write_key_arns: list[str]) -> dict[str, Any]:
-    statements = []
-    if read_key_arns:
-        statements.append(
-            _statement(sid="AllowDecryptReads", actions=["kms:Decrypt"], resources=read_key_arns)
-        )
-    if write_key_arns:
-        statements.append(
-            _statement(
-                sid="AllowEncryptWrites",
-                actions=["kms:Encrypt", "kms:GenerateDataKey"],
-                resources=write_key_arns,
-            )
-        )
-    return _document(statements)
-
-
 def ecs_task_protection_policy(*, cluster_arn: str) -> dict[str, Any]:
     task_resource_arn = cluster_arn.replace(":cluster/", ":task/", 1) + "/*"
     return _document(
@@ -264,13 +254,13 @@ def codebuild_manual_deploy_policy(
     )
 
 
-def backend_request_queue_send_policy(*, request_queue_arn: str, kms_key_arn: str) -> dict[str, Any]:
+def backend_request_queue_send_policy(*, request_queue_arn: str) -> dict[str, Any]:
     """Grants the backend's existing SQS-send IAM user just enough to enqueue AI-review requests.
 
     That user is the one the Django backend authenticates as via
     ``CUSTOM_AWS_ACCESS_KEY_ID``/``SECRET`` -- it is not provisioned by this
-    tool, so this policy only covers the send side of the request queue plus
-    the KMS actions SQS needs to encrypt on send.
+    tool, so this policy only covers the send side of the request queue. The
+    queue itself is unencrypted (no SSE-KMS), so no KMS grant is needed here.
     """
 
     return _document(
@@ -280,21 +270,16 @@ def backend_request_queue_send_policy(*, request_queue_arn: str, kms_key_arn: st
                 actions=["sqs:SendMessage"],
                 resources=[request_queue_arn],
             ),
-            _statement(
-                sid="AllowKmsForSend",
-                actions=["kms:GenerateDataKey", "kms:Decrypt"],
-                resources=[kms_key_arn],
-            ),
         ]
     )
 
 
-def backend_response_queue_receive_policy(*, response_queue_arn: str, kms_key_arn: str) -> dict[str, Any]:
+def backend_response_queue_receive_policy(*, response_queue_arn: str) -> dict[str, Any]:
     """Grants the backend's existing Lambda execution role just enough to consume AI-review responses.
 
     The Lambda function and its role are not provisioned by this tool, so
-    this policy only covers the receive side of the response queue plus the
-    KMS decrypt action the event-source mapping needs to poll it.
+    this policy only covers the receive side of the response queue. The
+    queue itself is unencrypted (no SSE-KMS), so no KMS grant is needed here.
     """
 
     return _document(
@@ -303,9 +288,6 @@ def backend_response_queue_receive_policy(*, response_queue_arn: str, kms_key_ar
                 sid="AllowResponseQueueConsume",
                 actions=["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
                 resources=[response_queue_arn],
-            ),
-            _statement(
-                sid="AllowKmsForReceive", actions=["kms:Decrypt"], resources=[kms_key_arn]
             ),
         ]
     )
@@ -357,62 +339,3 @@ def sqs_queue_policy(*, queue_arn: str, allowed_role_arns: list[str]) -> dict[st
     )
 
 
-def kms_key_policy(
-    *, account_id: str, admin_role_arn: str, user_role_arns: list[str]
-) -> dict[str, Any]:
-    statements = [
-        {
-            "Sid": "AllowRootAccountAdmin",
-            "Effect": "Allow",
-            "Principal": {"AWS": f"arn:aws:iam::{account_id}:root"},
-            "Action": "kms:*",
-            "Resource": "*",
-        },
-        {
-            "Sid": "AllowKeyAdministration",
-            "Effect": "Allow",
-            "Principal": {"AWS": admin_role_arn},
-            "Action": [
-                "kms:Create*",
-                "kms:Describe*",
-                "kms:Enable*",
-                "kms:List*",
-                "kms:Put*",
-                "kms:Update*",
-                "kms:Revoke*",
-                "kms:Disable*",
-                "kms:Get*",
-                "kms:Delete*",
-                "kms:TagResource",
-                "kms:UntagResource",
-                "kms:ScheduleKeyDeletion",
-                "kms:CancelKeyDeletion",
-            ],
-            "Resource": "*",
-        },
-    ]
-    if user_role_arns:
-        statements.append(
-            {
-                "Sid": "AllowKeyUseByRuntimeRoles",
-                "Effect": "Allow",
-                "Principal": {"AWS": user_role_arns},
-                "Action": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
-                "Resource": "*",
-            }
-        )
-    return _document(statements)
-
-
-def secrets_manager_resource_policy(*, allowed_role_arns: list[str]) -> dict[str, Any]:
-    return _document(
-        [
-            {
-                "Sid": "AllowApprovedRolesOnly",
-                "Effect": "Allow",
-                "Principal": {"AWS": allowed_role_arns},
-                "Action": "secretsmanager:GetSecretValue",
-                "Resource": "*",
-            }
-        ]
-    )

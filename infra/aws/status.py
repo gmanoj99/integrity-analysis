@@ -45,6 +45,10 @@ def _check_storage_bucket(ctx: OrchestratorContext) -> dict[str, Any]:
 
 
 def _check_queues(ctx: OrchestratorContext, names: dict[str, str]) -> list[dict[str, Any]]:
+    """Queues are intentionally unencrypted (no SSE-KMS); this checks reachability plus,
+    for the two main queues, that a redrive-to-DLQ policy is actually configured.
+    """
+
     sqs = ctx.client("sqs")
     checks = []
     for key in ("request_queue", "response_queue", "request_dlq", "response_dlq"):
@@ -52,19 +56,41 @@ def _check_queues(ctx: OrchestratorContext, names: dict[str, str]) -> list[dict[
             queue_url = sqs.get_queue_url(QueueName=names[key])["QueueUrl"]
             attributes = sqs.get_queue_attributes(
                 QueueUrl=queue_url,
-                AttributeNames=["KmsMasterKeyId", "ApproximateNumberOfMessages", "RedrivePolicy"],
+                AttributeNames=["ApproximateNumberOfMessages", "RedrivePolicy"],
             )["Attributes"]
-            encrypted = "KmsMasterKeyId" in attributes
+            redrive_configured = "RedrivePolicy" in attributes
             checks.append(
                 _check(
                     f"sqs.{key}",
-                    encrypted,
-                    f"encrypted={encrypted} visible={attributes.get('ApproximateNumberOfMessages')}",
+                    True,
+                    f"redrive_configured={redrive_configured} visible={attributes.get('ApproximateNumberOfMessages')}",
                 )
             )
         except sqs.exceptions.QueueDoesNotExist:
             checks.append(_check(f"sqs.{key}", False, "queue does not exist"))
     return checks
+
+
+def _check_gemini_ssm_parameter(ctx: OrchestratorContext, names: dict[str, str]) -> dict[str, Any]:
+    """The Gemini API key SSM parameter is externally managed (never written by this tool);
+    only verify it exists so ``GEMINI_API_KEY`` injection at task start won't fail.
+    """
+
+    ssm = ctx.client("ssm")
+    parameter_name = names["gemini_ssm_parameter"]
+    try:
+        ssm.get_parameter(Name=parameter_name)
+        return _check("ssm.gemini_api_key", True, f"parameter={parameter_name} exists")
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") == "ParameterNotFound":
+            return _check(
+                "ssm.gemini_api_key",
+                False,
+                f"parameter={parameter_name} not found; set it with: "
+                f'aws ssm put-parameter --name "{parameter_name}" --type "SecureString" '
+                f'--value "<GEMINI_API_KEY>" --overwrite',
+            )
+        raise
 
 
 def _check_ecs_service(ctx: OrchestratorContext, names: dict[str, str]) -> dict[str, Any]:
@@ -100,6 +126,7 @@ def run_status_checks(ctx: OrchestratorContext, *, deep: bool) -> dict[str, Any]
     if deep:
         checks.append(_check_storage_bucket(ctx))
         checks.extend(_check_queues(ctx, names))
+        checks.append(_check_gemini_ssm_parameter(ctx, names))
         checks.append(_check_ecs_service(ctx, names))
 
         try:

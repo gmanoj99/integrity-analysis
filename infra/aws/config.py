@@ -56,7 +56,7 @@ class EnvironmentConfig:
     project: str
     stage: str
     storage_bucket_name: str
-    storage_kms_key_arn: str | None
+    s3_bucket_stage_name: str
     codebuild_project_name: str
     backend_iam_user_name: str
     backend_lambda_function_name: str
@@ -146,7 +146,14 @@ def load_environment_config(
         project=_require(raw, "project"),
         stage=raw.get("stage", "beta"),
         storage_bucket_name=_require(raw, "storage_bucket_name"),
-        storage_kms_key_arn=raw.get("storage_kms_key_arn"),
+        # The worker's own STAGE env var (validated against a strict
+        # beta/prod enum) is not the S3 key prefix the rest of the
+        # application actually uses -- Django's settings.STAGE (and thus
+        # every existing S3 path for recordings/requests/results) is
+        # "topin_beta"/"topin_prod", not "beta"/"prod". This field lets the
+        # task role's S3 policy be scoped to the real prefix without
+        # changing what's passed to the worker as STAGE.
+        s3_bucket_stage_name=_require(raw, "s3_bucket_stage_name"),
         codebuild_project_name=_require(raw, "codebuild_project_name"),
         backend_iam_user_name=_require(raw, "backend_iam_user_name"),
         backend_lambda_function_name=_require(raw, "backend_lambda_function_name"),

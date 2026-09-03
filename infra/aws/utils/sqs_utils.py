@@ -1,4 +1,4 @@
-"""Encrypted SQS queues with redrive-to-DLQ and an approved-principal policy."""
+"""Unencrypted SQS queues with redrive-to-DLQ and an approved-principal policy."""
 
 from __future__ import annotations
 
@@ -28,10 +28,19 @@ def queue_arn(client: Any, queue_url: str) -> str:
 
 
 def ensure_queue(client: Any, spec: QueueSpec, tags: dict[str, str]) -> str:
-    """Create (if missing) and configure the queue. Returns the queue URL."""
+    """Create (if missing) and configure the queue. Returns the queue URL.
+
+    ``KmsMasterKeyId`` is deliberately handled differently per branch:
+    ``CreateQueue`` rejects an empty string for it (``InvalidAttributeValue``)
+    -- an unencrypted new queue must simply omit the attribute. An
+    *existing* queue previously encrypted with a customer KMS key, on the
+    other hand, only drops that encryption when ``SetQueueAttributes`` is
+    called with ``KmsMasterKeyId=""`` explicitly; omitting it there would
+    leave the old key in place, since SQS only touches attributes it is
+    given.
+    """
 
     attributes: dict[str, str] = {
-        "KmsMasterKeyId": spec.kms_key_id,
         "VisibilityTimeout": str(spec.visibility_timeout_seconds),
         "MessageRetentionPeriod": str(spec.message_retention_seconds),
         "ReceiveMessageWaitTimeSeconds": LONG_POLL_WAIT_TIME_SECONDS,
@@ -49,7 +58,9 @@ def ensure_queue(client: Any, spec: QueueSpec, tags: dict[str, str]) -> str:
             tags=tags,
         )["QueueUrl"]
     else:
-        client.set_queue_attributes(QueueUrl=queue_url, Attributes=attributes)
+        client.set_queue_attributes(
+            QueueUrl=queue_url, Attributes={**attributes, "KmsMasterKeyId": ""}
+        )
         client.tag_queue(QueueUrl=queue_url, Tags=tags)
 
     if spec.allowed_role_arns:

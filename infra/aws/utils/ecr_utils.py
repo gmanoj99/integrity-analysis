@@ -1,4 +1,4 @@
-"""ECR repository provisioning: immutable tags, KMS encryption, scan-on-push."""
+"""ECR repository provisioning: immutable tags, standard AES-256 encryption, scan-on-push."""
 
 from __future__ import annotations
 
@@ -24,7 +24,12 @@ def repository_exists(client: Any, name: str) -> bool:
 
 
 def ensure_repository(client: Any, spec: RepositorySpec, tags: dict[str, str]) -> str:
-    """Create (if missing) an immutable, KMS-encrypted, scan-on-push repository."""
+    """Create (if missing) an immutable, scan-on-push repository.
+
+    Deliberately omits ``encryptionConfiguration``: ECR always encrypts
+    images at rest, and leaving this unset uses ECR's standard AES-256
+    encryption with an AWS-owned key rather than a customer-managed KMS key.
+    """
 
     repository = _describe_repository(client, spec.name)
     if repository is None:
@@ -32,7 +37,6 @@ def ensure_repository(client: Any, spec: RepositorySpec, tags: dict[str, str]) -
             repositoryName=spec.name,
             imageTagMutability="IMMUTABLE",
             imageScanningConfiguration={"scanOnPush": True},
-            encryptionConfiguration={"encryptionType": "KMS", "kmsKey": spec.kms_key_arn},
             tags=[{"Key": key, "Value": value} for key, value in tags.items()],
         )["repository"]
 

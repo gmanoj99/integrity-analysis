@@ -30,6 +30,7 @@ def ensure_role(client: Any, spec: RoleSpec, tags: dict[str, str]) -> str:
             Description=spec.description,
             Tags=[{"Key": key, "Value": value} for key, value in tags.items()],
         )["Role"]
+        client.get_waiter("role_exists").wait(RoleName=spec.name)
     else:
         client.update_assume_role_policy(
             RoleName=spec.name, PolicyDocument=json.dumps(spec.trust_policy)

@@ -69,16 +69,8 @@ class NetworkSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class KmsKeySpec:
-    alias: str
-    description: str
-    key_policy: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
 class QueueSpec:
     name: str
-    kms_key_id: str
     visibility_timeout_seconds: int
     message_retention_seconds: int
     dlq_arn: str | None
@@ -89,16 +81,7 @@ class QueueSpec:
 @dataclass(frozen=True, slots=True)
 class RepositorySpec:
     name: str
-    kms_key_arn: str
     max_tagged_images: int
-
-
-@dataclass(frozen=True, slots=True)
-class SecretSpec:
-    name: str
-    kms_key_arn: str
-    description: str
-    allowed_role_arns: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +95,6 @@ class RoleSpec:
 @dataclass(frozen=True, slots=True)
 class LogGroupSpec:
     name: str
-    kms_key_arn: str
     retention_days: int
 
 

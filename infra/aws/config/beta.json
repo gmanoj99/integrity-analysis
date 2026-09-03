@@ -5,7 +5,7 @@
   "project": "nw-assessments-ai-analysis",
   "stage": "beta",
   "storage_bucket_name": "nxtwave-assessments-backend-nxtwave-media-static",
-  "storage_kms_key_arn": null,
+  "s3_bucket_stage_name": "topin_beta",
   "codebuild_project_name": "nw_assessments_ai_analysis_backend_beta",
   "backend_iam_user_name": "nxtwave-assessments-backend-nw-beta-s3-lambda",
   "backend_lambda_function_name": "nxtwave-assessments-backend-topin_beta",

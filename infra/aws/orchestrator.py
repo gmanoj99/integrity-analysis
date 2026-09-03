@@ -21,7 +21,6 @@ from .policies import (
     codebuild_manual_deploy_policy,
     ecs_task_ai_usage_logs_policy,
     ecs_task_execution_role_policy,
-    ecs_task_kms_policy,
     ecs_task_protection_policy,
     ecs_task_s3_policy,
     ecs_task_sqs_policy,
@@ -33,14 +32,12 @@ from .specs import (
     ClusterSpec,
     ContainerSpec,
     InternetGatewaySpec,
-    KmsKeySpec,
     NatGatewaySpec,
     QueueSpec,
     RepositorySpec,
     RoleSpec,
     RouteTableSpec,
     ScalableTargetSpec,
-    SecretSpec,
     SecurityGroupSpec,
     ServiceSpec,
     S3GatewayEndpointSpec,
@@ -60,11 +57,9 @@ from .utils import (
     ecr_utils,
     ecs_utils,
     iam_utils,
-    kms_utils,
     lambda_utils,
     logs_utils,
     s3_utils,
-    secrets_manager_utils,
     sqs_utils,
 )
 
@@ -77,11 +72,10 @@ _BACKEND_RECEIVE_POLICY_NAME = "AiAnalysisResponseQueueConsume"
 _BACKEND_RESPONSE_EVENT_SOURCE_BATCH_SIZE = 1
 _STEP_ORDER = [
     "network",
-    "kms",
+    "iam_roles",
     "data_plane",
     "observability_prereqs",
     "ecr",
-    "secret",
     "roles",
     "compute",
     "alarms",
@@ -115,16 +109,21 @@ def resource_names(config: EnvironmentConfig) -> dict[str, str]:
         "public_route_table": f"{prefix}-public-rt",
         "private_route_table": f"{prefix}-private-rt",
         "security_group": f"{prefix}-worker-sg",
-        "kms_data": f"{prefix}-data",
-        "kms_secrets": f"{prefix}-secrets",
-        "kms_logs": f"{prefix}-logs",
         "request_queue": f"{prefix}-request-queue",
         "request_dlq": f"{prefix}-request-dlq",
         "response_queue": f"{prefix}-response-queue",
         "response_dlq": f"{prefix}-response-dlq",
         "log_group": f"/ecs/{prefix}-worker",
         "ecr_repository": f"{prefix}-worker",
-        "gemini_secret": f"{prefix}/gemini-api-key",
+        # SSM Parameter Store parameter holding the Gemini API key. This
+        # tool never creates or writes this parameter -- see the
+        # `aws ssm put-parameter` command documented next to
+        # `_gemini_ssm_parameter_arn` below. Its name must keep this exact
+        # "{prefix}-gemini-api-key" shape: the execution role's IAM
+        # permission (`_gemini_ssm_parameter_prefix_arn`) is scoped to any
+        # parameter starting with "{prefix}-", so every secret for this
+        # environment must use that same prefix to be readable by ECS.
+        "gemini_ssm_parameter": f"{prefix}-gemini-api-key",
         "execution_role": f"{prefix}-ecs-execution",
         "task_role": f"{prefix}-ecs-task",
         "cluster": f"{prefix}-cluster",
@@ -220,64 +219,72 @@ def _ensure_network(ctx: OrchestratorContext, manifest: DeploymentManifest, name
     _record(manifest, "s3_gateway_endpoint", resource_type="ec2.vpc_endpoint", identifier=endpoint_id, arn=None)
 
 
-def _admin_principal_arn(ctx: OrchestratorContext) -> str:
-    """Resolve the IAM principal actually running the provisioner.
+def _gemini_ssm_parameter_arn(ctx: OrchestratorContext, names: dict[str, str]) -> str:
+    """ARN of the single Gemini API key SSM parameter used as the task's ``GEMINI_API_KEY``.
 
-    KMS key policies only accept concrete IAM user/role ARNs, not the
-    ``assumed-role`` STS ARN shape returned for role-based sessions, so
-    assumed-role callers are rewritten to their underlying role ARN.
+    This tool never creates or writes this parameter's value -- populate it
+    out-of-band, once per environment, e.g.::
+
+        aws ssm put-parameter \\
+          --name "nw-assessments-ai-analysis-beta-gemini-api-key" \\
+          --type "SecureString" \\
+          --value "<GEMINI_API_KEY>" \\
+          --overwrite
+
+    It uses SSM's default (AWS-managed ``alias/aws/ssm``) key, so no
+    ``kms:Decrypt`` grant is required for the execution role to read it.
     """
 
-    caller_arn = ctx.client("sts").get_caller_identity()["Arn"]
-    if ":assumed-role/" in caller_arn:
-        role_name = caller_arn.split(":assumed-role/", 1)[1].split("/", 1)[0]
-        return f"arn:aws:iam::{ctx.config.account_id}:role/{role_name}"
-    return caller_arn
+    return f"arn:aws:ssm:{ctx.config.region}:{ctx.config.account_id}:parameter/{names['gemini_ssm_parameter']}"
 
 
-def _kms_key_policy_for(ctx: OrchestratorContext, user_role_arns: list[str]) -> dict[str, Any]:
-    from .policies import kms_key_policy
+def _gemini_ssm_parameter_prefix_arn(ctx: OrchestratorContext) -> str:
+    """Wildcard ARN scoping the execution role's SSM read access to this environment's prefix only.
 
-    return kms_key_policy(
-        account_id=ctx.config.account_id,
-        admin_role_arn=_admin_principal_arn(ctx),
-        user_role_arns=user_role_arns,
+    Any parameter named "{resource_prefix}-*" (e.g. a future
+    "nw-assessments-ai-analysis-beta-some-other-key") becomes readable
+    without another policy change; parameters outside this prefix stay
+    inaccessible.
+    """
+
+    return f"arn:aws:ssm:{ctx.config.region}:{ctx.config.account_id}:parameter/{ctx.config.resource_prefix}-*"
+
+
+def _ensure_iam_roles(
+    ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]
+) -> None:
+    iam = ctx.client("iam")
+    tags = ctx.config.resolved_tags()
+    trust = ecs_task_trust_policy()
+    role_specs = (
+        ("execution_role", "ECS execution role: image pull, logs, Gemini SSM parameter"),
+        ("task_role", "ECS task role: S3/SQS/task-protection/AI-usage-logs least privilege"),
     )
-
-
-def _ensure_kms(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
-    kms = ctx.client("kms")
-    task_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['task_role']}"
-    execution_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['execution_role']}"
-
-    for key_name, alias in (("kms_data", names["kms_data"]), ("kms_secrets", names["kms_secrets"]), ("kms_logs", names["kms_logs"])):
-        user_roles = [task_role_arn] if key_name == "kms_data" else [execution_role_arn]
-        arn = kms_utils.ensure_key(
-            kms,
-            KmsKeySpec(alias, f"{alias} - ECS test stack", _kms_key_policy_for(ctx, user_roles)),
+    for key, description in role_specs:
+        arn = iam_utils.ensure_role(
+            iam, RoleSpec(names[key], trust, description), tags
         )
-        _record(manifest, key_name, resource_type="kms.key", identifier=alias, arn=arn)
+        _record(manifest, key, resource_type="iam.role", identifier=names[key], arn=arn)
+
+
+_DLQ_MAX_RECEIVE_COUNT = 5
 
 
 def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
     sqs = ctx.client("sqs")
     tags = ctx.config.resolved_tags()
-    data_kms_arn = manifest.resources["kms_data"].arn
-    task_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['task_role']}"
+    task_role_arn = manifest.resources["task_role"].arn
+    retention_seconds = ctx.config.retention.queue_message_retention_seconds
 
     request_dlq_url = sqs_utils.ensure_queue(
         sqs,
-        QueueSpec(
-            names["request_dlq"], data_kms_arn, 300, ctx.config.retention.queue_message_retention_seconds, None, 0, ()
-        ),
+        QueueSpec(names["request_dlq"], 300, retention_seconds, None, 0, ()),
         tags,
     )
     request_dlq_arn = sqs_utils.queue_arn(sqs, request_dlq_url)
     response_dlq_url = sqs_utils.ensure_queue(
         sqs,
-        QueueSpec(
-            names["response_dlq"], data_kms_arn, 300, ctx.config.retention.queue_message_retention_seconds, None, 0, ()
-        ),
+        QueueSpec(names["response_dlq"], 300, retention_seconds, None, 0, ()),
         tags,
     )
     response_dlq_arn = sqs_utils.queue_arn(sqs, response_dlq_url)
@@ -288,11 +295,10 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
         sqs,
         QueueSpec(
             names["request_queue"],
-            data_kms_arn,
             300,
-            ctx.config.retention.queue_message_retention_seconds,
+            retention_seconds,
             request_dlq_arn,
-            5,
+            _DLQ_MAX_RECEIVE_COUNT,
             (task_role_arn,),
         ),
         tags,
@@ -301,11 +307,10 @@ def _ensure_data_plane(ctx: OrchestratorContext, manifest: DeploymentManifest, n
         sqs,
         QueueSpec(
             names["response_queue"],
-            data_kms_arn,
             300,
-            ctx.config.retention.queue_message_retention_seconds,
+            retention_seconds,
             response_dlq_arn,
-            5,
+            _DLQ_MAX_RECEIVE_COUNT,
             (task_role_arn,),
         ),
         tags,
@@ -330,7 +335,7 @@ def _ensure_observability_prereqs(ctx: OrchestratorContext, manifest: Deployment
     logs = ctx.client("logs")
     arn = logs_utils.ensure_log_group(
         logs,
-        LogGroupSpec(names["log_group"], manifest.resources["kms_logs"].arn, ctx.config.retention.log_retention_days),
+        LogGroupSpec(names["log_group"], ctx.config.retention.log_retention_days),
     )
     _record(manifest, "log_group", resource_type="logs.log_group", identifier=names["log_group"], arn=arn)
 
@@ -339,26 +344,10 @@ def _ensure_ecr(ctx: OrchestratorContext, manifest: DeploymentManifest, names: d
     ecr = ctx.client("ecr")
     arn = ecr_utils.ensure_repository(
         ecr,
-        RepositorySpec(names["ecr_repository"], manifest.resources["kms_data"].arn, ctx.config.retention.ecr_max_tagged_images),
+        RepositorySpec(names["ecr_repository"], ctx.config.retention.ecr_max_tagged_images),
         ctx.config.resolved_tags(),
     )
     _record(manifest, "ecr_repository", resource_type="ecr.repository", identifier=names["ecr_repository"], arn=arn)
-
-
-def _ensure_secret(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
-    secrets_manager = ctx.client("secretsmanager")
-    execution_role_arn = f"arn:aws:iam::{ctx.config.account_id}:role/{names['execution_role']}"
-    arn = secrets_manager_utils.ensure_secret(
-        secrets_manager,
-        SecretSpec(
-            names["gemini_secret"],
-            manifest.resources["kms_secrets"].arn,
-            "Gemini API key for the ECS worker (value set out-of-band)",
-            (execution_role_arn,),
-        ),
-        ctx.config.resolved_tags(),
-    )
-    _record(manifest, "gemini_secret", resource_type="secretsmanager.secret", identifier=names["gemini_secret"], arn=arn)
 
 
 def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names: dict[str, str]) -> None:
@@ -369,19 +358,17 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
 
     ecr_repo_arn = manifest.resources["ecr_repository"].arn
     log_group_arn = manifest.resources["log_group"].arn
-    gemini_secret_arn = manifest.resources["gemini_secret"].arn
     execution_role_arn = iam_utils.ensure_role(
         iam,
         RoleSpec(
             names["execution_role"],
             trust,
-            "ECS execution role: image pull, logs, Gemini secret",
+            "ECS execution role: image pull, logs, Gemini SSM parameter",
             {
                 "execution": ecs_task_execution_role_policy(
                     repository_arn=ecr_repo_arn,
                     log_group_arn=log_group_arn,
-                    gemini_secret_arn=gemini_secret_arn,
-                    kms_key_arns=[manifest.resources["kms_secrets"].arn, manifest.resources["kms_logs"].arn],
+                    gemini_ssm_parameter_prefix_arn=_gemini_ssm_parameter_prefix_arn(ctx),
                 )
             },
         ),
@@ -391,39 +378,39 @@ def _ensure_roles(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
 
     cluster_arn = f"arn:aws:ecs:{ctx.config.region}:{account_id}:cluster/{names['cluster']}"
     storage_bucket_arn = f"arn:aws:s3:::{ctx.config.storage_bucket_name}"
-    kms_key_arns = [manifest.resources["kms_data"].arn]
-    if ctx.config.storage_kms_key_arn:
-        # The shared media bucket lives outside this repo and may be
-        # encrypted with its own KMS key; kms_data only covers the
-        # request/response SQS queues provisioned here.
-        kms_key_arns.append(ctx.config.storage_kms_key_arn)
+    # The task role needs no KMS grant at all: this tool no longer manages
+    # any customer-managed KMS key (SQS/DLQ, CloudWatch Logs, ECR, and the
+    # Gemini SSM parameter are all unencrypted or use AWS-owned/managed
+    # keys), and the externally-owned media bucket (same account) is
+    # unencrypted too.
+    inline_policies = {
+        # Scoped to s3_bucket_stage_name ("topin_beta"/"topin_prod"), the
+        # real S3 key prefix Django/the worker use for recordings, staged
+        # requests, and results -- not ctx.config.stage ("beta"/"prod"),
+        # which only feeds the worker's own STAGE env var/enum.
+        "s3": ecs_task_s3_policy(
+            storage_bucket_arn=storage_bucket_arn,
+            stage=ctx.config.s3_bucket_stage_name,
+        ),
+        "sqs": ecs_task_sqs_policy(
+            request_queue_arn=manifest.resources["request_queue"].arn,
+            response_queue_arn=manifest.resources["response_queue"].arn,
+        ),
+        "task_protection": ecs_task_protection_policy(cluster_arn=cluster_arn),
+        "ai_usage_logs": ecs_task_ai_usage_logs_policy(
+            log_group_arn=(
+                f"arn:aws:logs:{ctx.config.region}:{account_id}:"
+                f"log-group:{ctx.config.custom_ai_logs_group_name}:*"
+            ),
+        ),
+    }
     task_role_arn = iam_utils.ensure_role(
         iam,
         RoleSpec(
             names["task_role"],
             trust,
-            "ECS task role: S3/SQS/KMS/task-protection/AI-usage-logs least privilege",
-            {
-                "s3": ecs_task_s3_policy(
-                    storage_bucket_arn=storage_bucket_arn,
-                    stage=ctx.config.stage,
-                ),
-                "sqs": ecs_task_sqs_policy(
-                    request_queue_arn=manifest.resources["request_queue"].arn,
-                    response_queue_arn=manifest.resources["response_queue"].arn,
-                ),
-                "kms": ecs_task_kms_policy(
-                    read_key_arns=kms_key_arns,
-                    write_key_arns=kms_key_arns,
-                ),
-                "task_protection": ecs_task_protection_policy(cluster_arn=cluster_arn),
-                "ai_usage_logs": ecs_task_ai_usage_logs_policy(
-                    log_group_arn=(
-                        f"arn:aws:logs:{ctx.config.region}:{account_id}:"
-                        f"log-group:{ctx.config.custom_ai_logs_group_name}:*"
-                    ),
-                ),
-            },
+            "ECS task role: S3/SQS/task-protection/AI-usage-logs least privilege",
+            inline_policies,
         ),
         tags,
     )
@@ -467,7 +454,7 @@ def _ensure_compute(ctx: OrchestratorContext, manifest: DeploymentManifest, name
         log_group=names["log_group"],
         region=ctx.config.region,
         environment=_worker_environment(ctx, manifest, names),
-        secrets={"GEMINI_API_KEY": manifest.resources["gemini_secret"].arn},
+        secrets={"GEMINI_API_KEY": _gemini_ssm_parameter_arn(ctx, names)},
     )
     task_definition_arn = ecs_utils.register_task_definition(
         ecs,
@@ -739,7 +726,6 @@ def _ensure_backend_send_access(
     user_name = ctx.config.backend_iam_user_name
     policy_document = backend_request_queue_send_policy(
         request_queue_arn=manifest.resources["request_queue"].arn,
-        kms_key_arn=manifest.resources["kms_data"].arn,
     )
     iam_utils.put_user_inline_policy(
         ctx.client("iam"),
@@ -774,7 +760,6 @@ def _ensure_backend_receive_access(
     role_name = role_arn.split("/")[-1]
     policy_document = backend_response_queue_receive_policy(
         response_queue_arn=response_queue_arn,
-        kms_key_arn=manifest.resources["kms_data"].arn,
     )
     iam_utils.put_inline_policy(
         ctx.client("iam"),
@@ -807,11 +792,10 @@ def _ensure_backend_receive_access(
 
 _STEPS: dict[str, Callable[[OrchestratorContext, DeploymentManifest, dict[str, str]], None]] = {
     "network": _ensure_network,
-    "kms": _ensure_kms,
+    "iam_roles": _ensure_iam_roles,
     "data_plane": _ensure_data_plane,
     "observability_prereqs": _ensure_observability_prereqs,
     "ecr": _ensure_ecr,
-    "secret": _ensure_secret,
     "roles": _ensure_roles,
     "compute": _ensure_compute,
     "alarms": _ensure_alarms,
@@ -884,7 +868,7 @@ def build_outputs(ctx: OrchestratorContext, manifest: DeploymentManifest, names:
             ],
             "security_group_ids": [manifest.resources["security_group"].identifier],
         },
-        "secrets": {"GEMINI_API_KEY": manifest.resources["gemini_secret"].arn},
+        "secrets": {"GEMINI_API_KEY": _gemini_ssm_parameter_arn(ctx, names)},
         "environment": _worker_environment(ctx, manifest, names),
         "raw_manifest_resources": manifest.to_dict()["resources"],
     }
@@ -929,9 +913,8 @@ _STEP_ORDER_INDEX = {
     "vpc": 0, "public_subnet_0": 0, "public_subnet_1": 0, "private_subnet_0": 0, "private_subnet_1": 0,
     "internet_gateway": 0, "nat_gateway": 0, "public_route_table": 0, "private_route_table": 0,
     "security_group": 0, "s3_gateway_endpoint": 0,
-    "kms_data": 1, "kms_secrets": 1, "kms_logs": 1,
     "request_dlq": 2, "response_dlq": 2, "request_queue": 2, "response_queue": 2,
-    "log_group": 3, "ecr_repository": 4, "gemini_secret": 5,
+    "log_group": 3, "ecr_repository": 4,
     "execution_role": 6, "task_role": 6,
     "cluster": 7, "task_definition": 7, "service": 7,
     "alarm": 9,
@@ -968,8 +951,6 @@ def _delete_resource(ctx: OrchestratorContext, record: ResourceRecord) -> None:
         ecs = ctx.client("ecs")
         for revision in ecs.list_task_definitions(familyPrefix=record.identifier)["taskDefinitionArns"]:
             ecs.deregister_task_definition(taskDefinition=revision)
-    elif record.resource_type == "secretsmanager.secret":
-        ctx.client("secretsmanager").delete_secret(SecretId=record.identifier, ForceDeleteWithoutRecovery=True)
     elif record.resource_type == "ecr.repository":
         ctx.client("ecr").delete_repository(repositoryName=record.identifier, force=True)
     elif record.resource_type == "logs.log_group":
@@ -982,8 +963,7 @@ def _delete_resource(ctx: OrchestratorContext, record: ResourceRecord) -> None:
         _delete_role(ctx.client("iam"), record.identifier)
     elif record.resource_type == "cloudwatch.alarm":
         ctx.client("cloudwatch").delete_alarms(AlarmNames=[record.identifier])
-    # KMS keys and VPC networking are deliberately not force-deleted here:
-    # keys are scheduled for deletion (7-day minimum) and network teardown
+    # VPC networking is deliberately not force-deleted here: teardown
     # requires strict dependency ordering handled by `destroy()` directly.
     # "iam.inline_policy" (CodeBuild deploy policy, backend send/receive
     # policies) and "lambda.event_source_mapping" are also deliberately
@@ -1066,19 +1046,6 @@ def _teardown_network(ctx: OrchestratorContext, manifest: DeploymentManifest) ->
     ):
         if key in manifest.resources:
             manifest.resources[key].status = "destroyed"
-
-
-def _teardown_kms(ctx: OrchestratorContext, manifest: DeploymentManifest) -> None:
-    """Schedule (not force-delete) KMS keys: AWS enforces a >=7-day deletion window."""
-
-    kms = ctx.client("kms")
-    for key in ("kms_data", "kms_secrets", "kms_logs"):
-        record = manifest.resources.get(key)
-        if record is None or record.status == "destroyed":
-            continue
-        kms.disable_key(KeyId=record.arn)
-        kms.schedule_key_deletion(KeyId=record.arn, PendingWindowInDays=7)
-        record.status = "destroyed"
 
 
 def destroy(ctx: OrchestratorContext) -> None:
