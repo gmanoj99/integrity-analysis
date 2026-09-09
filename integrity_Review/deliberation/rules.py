@@ -104,6 +104,10 @@ FIELD_PATH_RESOLVERS: dict[str, str] = {
     "audio.speechStyle": "audio.speechStyle",
     "audio.speechOverlapWithLips": "audio.speechOverlapWithLips",
     "audio.codeMixing": "audio.codeMixing",
+    # Advertised verbatim by engine._build_citation_inventory, so it has to
+    # resolve here too. Free text, so the value comparison below will often
+    # not match exactly; that only drops the citation, never the signal.
+    "audio.conversationSummaryEn": "audio.conversationSummaryEn",
     "people.secondPersonPosition": "people.secondPersonPosition",
     "people.secondPersonLooksLike": "people.secondPersonLooksLike",
     "people.secondPersonRoleCue": "people.secondPersonRoleCue",
@@ -281,10 +285,9 @@ def validate_value_resolving_citations(
         if observation is None:
             return RuleResult(False, f'Cited window "{window_id}" does not exist')
         if field_path not in FIELD_PATH_RESOLVERS:
-            return RuleResult(
-                False,
-                f'Cited field path "{field_path}" is not a citable observation field',
-            )
+            # Drop the citation rather than the signal: one stray field path
+            # must not discard an otherwise well-evidenced judgement.
+            continue
         actual = _get_nested(observation, FIELD_PATH_RESOLVERS[field_path])
         if _is_unknown(actual):
             continue

@@ -30,6 +30,10 @@ from .clips import resolve_offset_clip_ref
 
 LONG_SPAN_MS = 300_000
 OBSERVATION_CLIP_DURATION_MS = 20_000
+# How far from a signal's cited windows a machine fact still counts as
+# corroborating it, and how long a gap ends a burst of telemetry-only facts.
+FACT_WINDOW_PAD_MS = 15_000
+FACT_CLUSTER_GAP_MS = 60_000
 
 REVIEWER_PROSE_REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bavgCharsPerSecond\b"), "typing rate"),
@@ -259,7 +263,28 @@ def signal_time_span(
         observations.append(obs)
 
     facts = attr(machine_facts_bundle, "facts", default=[]) or []
-    facts_used = [f for f in facts if fact_kind(f) in signal.machine_facts_cited]
+    cited = [f for f in facts if fact_kind(f) in signal.machine_facts_cited]
+    # A cited kind like MCQ_ANSWER_SELECTED fires throughout the exam, so
+    # matching on kind alone stretches the span from the first occurrence to the
+    # last — the whole session — and drags the clip anchor with it. The facts
+    # that corroborate a signal are the ones near the windows it actually cites,
+    # the same rule _resolve_story_machine_facts already applies.
+    if observations:
+        obs_start = min(int(attr(o, "start_ms", "startMs", default=0) or 0) for o in observations)
+        obs_end = max(int(attr(o, "end_ms", "endMs", default=0) or 0) for o in observations)
+        facts_used = [
+            f
+            for f in cited
+            if obs_start - FACT_WINDOW_PAD_MS <= fact_start_ms(f) <= obs_end + FACT_WINDOW_PAD_MS
+        ]
+    else:
+        # Telemetry-only signal: no window to anchor to, so keep the first
+        # contiguous burst rather than every occurrence in the session.
+        facts_used = []
+        for fact in sorted(cited, key=fact_start_ms):
+            if facts_used and fact_start_ms(fact) - fact_start_ms(facts_used[-1]) > FACT_CLUSTER_GAP_MS:
+                break
+            facts_used.append(fact)
 
     starts = [
         int(attr(o, "start_ms", "startMs", default=0) or 0) for o in observations
@@ -453,11 +478,18 @@ def build_integrity_stories(
             time_range_ms,
             raw_story.proof_anchors.machine_fact_kinds,
         )
+        # ``time_range_ms`` is the episode's narrative span — minutes of context
+        # the reviewer does not need to watch. The proof clip is the evidence
+        # window itself, held to one chunk so the card offers a single clip
+        # sitting on the moment rather than a run of consecutive chunks.
+        evidence_start = int(span["start_ms"])
+        evidence_end = int(span["end_ms"])
         clip_ref = (
             resolve_offset_clip_ref(
-                event_ms=int(video_seek_ms or time_range_ms[0]),
-                duration_ms=max(OBSERVATION_CLIP_DURATION_MS, time_range_ms[1] - time_range_ms[0]),
+                event_ms=evidence_start,
+                duration_ms=max(OBSERVATION_CLIP_DURATION_MS, evidence_end - evidence_start),
                 media_index=media_index,
+                single_segment=True,
             )
             if covered_windows > 0 and media_index
             else None
@@ -559,6 +591,7 @@ def build_timeline_entries(
                 event_ms=clip_anchor,
                 duration_ms=OBSERVATION_CLIP_DURATION_MS,
                 media_index=media_index,
+                single_segment=True,
             )
             if covered_windows > 0 and media_index
             else None

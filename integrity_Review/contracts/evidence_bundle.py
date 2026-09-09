@@ -120,7 +120,24 @@ class DetectedSignalsSection(ContractModel):
     rejected_signals: list[RejectedSignalEntry] = Field(default_factory=list)
 
 
+TrackBStatus = Literal["confirmed", "cleared", "context", "unknown"]
+
+
 class TrackBObservationCard(ContractModel):
+    """The single reviewer-facing card.
+
+    This is the only section the review UI renders, so it carries the
+    deliberation verdict rather than the raw deterministic finding: a card is
+    ``confirmed`` when the model emitted a signal for it, ``cleared`` when the
+    model considered and dismissed it, ``context`` for permitted interactions
+    (invigilator, technical help) and ``unknown`` for coverage gaps. Cleared
+    and context cards stay in the payload — a reviewer has to be able to tell
+    "nothing happened" from "nothing was analysed".
+
+    ``event_type`` is an open vocabulary: it carries the model's own signal
+    type or episode classification, not a fixed enum.
+    """
+
     id: str
     event_type: str
     title: str
@@ -131,6 +148,27 @@ class TrackBObservationCard(ContractModel):
     clip_ref: ClipRef | None = None
     detail: str | None = None
     evidence_strength: Literal["strong", "moderate", "thin"] | None = None
+
+    # Deliberation verdict
+    status: TrackBStatus = "confirmed"
+    signal_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    resolution: str | None = None
+    severity: str | None = None
+
+    # Reviewer-facing narrative, lifted from the model's integrity story
+    what_happened: str | None = None
+    why_it_matters: str | None = None
+    honest_alternative: str | None = None
+    reason_cleared: str | None = None
+
+    # Speech evidence — often the whole case, and previously unreachable
+    audio_summary: str | None = None
+    notable_phrases: list[str] = Field(default_factory=list)
+    speech_language: str | None = None
+
+    source_types: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class CorrelatedPatternEvent(ContractModel):

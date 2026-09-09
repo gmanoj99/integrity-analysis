@@ -30,14 +30,13 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlparse
- 
-import httpx
 
+import httpx
 from nw_assessments_ai_analysis_backend.adapters import (
     GoogleGeminiClient,
     InMemoryPerceptionCache,
@@ -54,7 +53,9 @@ from nw_assessments_ai_analysis_backend.media.perception_media import (
     is_ebml_magic,
     maybe_gunzip,
 )
+from nw_assessments_ai_analysis_backend.deliberation import rules as _rules
 from nw_assessments_ai_analysis_backend.perception import chunk_job as _chunk_job
+from nw_assessments_ai_analysis_backend import pipeline as _pipeline
 from nw_assessments_ai_analysis_backend.pipeline import run_integrity_review
 from nw_assessments_ai_analysis_backend.timeline import build_master_timeline
 from nw_assessments_ai_analysis_backend.worker.contracts import (
@@ -109,9 +110,14 @@ def classify_url(url: str) -> ChunkUrl:
     own manifest builder keys off the same thing:
 
     * ``user_camera_recordings/…/{stem}.webm``      -> CAMERA_VIDEO (pure camera)
-    * ``user_session_recordings/…/v3/{stem}.webm``  -> SCREEN_CAMERA_VIDEO (combined)
+    * ``user_session_recordings/…/v3/{stem}.webm``  -> provisionally SCREEN_CAMERA_VIDEO
     * ``user_session_recordings/…/{stem}.webm``     -> SCREEN_VIDEO (screen only)
     * ``user_session_recordings/…/{epoch}.json``    -> RRWEB_EVENT (DOM batch)
+
+    The v3 case is only provisional: a ``v3`` session recording is the combined
+    screen+camera clip *unless* the attempt also has its own camera recordings,
+    in which case the session video is screen-only. ``resolve_media_types``
+    settles it once every url has been seen.
     """
 
     path = unquote(urlparse(url).path)
@@ -155,6 +161,29 @@ def classify_url(url: str) -> ChunkUrl:
         epoch_ms=int(match.group("epoch")) if match else None,
         duration_ms=int(duration) if duration is not None else None,
     )
+
+
+def resolve_media_types(chunks: list[ChunkUrl]) -> list[ChunkUrl]:
+    """Settle the combined-vs-screen-only question across the whole input.
+
+    The backend contract (see ``tests/payloads.combined_payload``) is that an
+    attempt never has separate CAMERA_VIDEO chunks alongside
+    SCREEN_CAMERA_VIDEO ones. Read the other way round: if the attempt *does*
+    ship its own camera recordings, the session video is plain screen, not a
+    combined clip. Getting this wrong would analyse the camera twice — once
+    standalone and once inside the "combined" clip — doubling Gemini cost and
+    letting one camera event be counted as two.
+    """
+
+    has_camera = any(chunk.media_type == "CAMERA_VIDEO" for chunk in chunks)
+    if not has_camera:
+        return chunks
+    return [
+        replace(chunk, media_type="SCREEN_VIDEO")
+        if chunk.media_type == "SCREEN_CAMERA_VIDEO"
+        else chunk
+        for chunk in chunks
+    ]
 
 
 def identity_from_key(s3_key: str) -> tuple[str, str, str]:
@@ -712,7 +741,7 @@ def summarize(normalized: NormalizedReviewRequest, timeline: Any) -> dict[str, A
 
 
 async def run(args: argparse.Namespace) -> int:
-    input_path: Path = args.input
+    input_paths: list[Path] = list(args.input) or [ROOT / "input" / "input.json"]
     out_dir: Path = args.output_dir
     cache_dir: Path = args.cache_dir
     prefix = f"{args.run_name}_" if args.run_name else ""
@@ -720,13 +749,28 @@ async def run(args: argparse.Namespace) -> int:
     def out(name: str) -> Path:
         return out_dir / f"{prefix}{name}"
 
-    raw = json.loads(input_path.read_text(encoding="utf-8"))
-    urls = raw.get("chunk_urls") or raw.get("chunkUrls")
-    if not urls:
-        raise SystemExit(f"{input_path} has no 'chunk_urls'")
+    # One attempt's evidence often arrives as several lists (camera in one,
+    # session recordings in another), so accept --input more than once and
+    # merge them into a single review. Later files' overrides win.
+    raw: dict[str, Any] = {}
+    urls: list[str] = []
+    seen: set[str] = set()
+    for path in input_paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        found = payload.get("chunk_urls") or payload.get("chunkUrls") or []
+        if not found:
+            raise SystemExit(f"{path} has no 'chunk_urls'")
+        for url in found:
+            # Same object signed twice across files is one chunk, not two.
+            key = unquote(urlparse(url).path)
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(url)
+        raw.update({k: v for k, v in payload.items() if k not in ("chunk_urls", "chunkUrls")})
 
-    chunks = [classify_url(url) for url in urls]
-    print(f"input: {len(chunks)} urls from {rel(input_path)}")
+    chunks = resolve_media_types([classify_url(url) for url in urls])
+    print(f"input: {len(chunks)} urls from {', '.join(rel(p) for p in input_paths)}")
     for role in ("media", "rrweb", "metadata", "events", "unknown"):
         matching = [chunk for chunk in chunks if chunk.role == role]
         if matching:
@@ -791,6 +835,26 @@ async def run(args: argparse.Namespace) -> int:
         staged["reviewId"],
         candidateId=normalized.request.candidate_id,
     )
+    if args.perception_model:
+        # chunk_job._gemini_text is the single perception call site, so
+        # rebinding the module's model constant swaps the model for every
+        # camera / screen / combined chunk without touching the library
+        # default the worker ships with.
+        _chunk_job.DEFAULT_GEMINI_FLASH_MODEL = args.perception_model
+        logger.info("local-runner: perception model overridden", model=args.perception_model)
+
+    if args.deliberation_model:
+        # pipeline.py reads DEFAULT_GEMINI_PRO_MODEL from its own module
+        # namespace at call time, so rebinding it there swaps the model for the
+        # deliberation call. The rules module's copy is rebound too, so the
+        # bundle's provenance records the model that actually ran rather than
+        # the pro default it no longer used.
+        _pipeline.DEFAULT_GEMINI_PRO_MODEL = args.deliberation_model
+        _rules.DELIBERATION_MODEL_VERSION = args.deliberation_model
+        logger.info(
+            "local-runner: deliberation model overridden", model=args.deliberation_model
+        )
+
     if args.fake_gemini:
         # No real call is made, so skip fetching or uploading a single byte.
         gemini: Any = FakeGemini()
@@ -812,9 +876,21 @@ async def run(args: argparse.Namespace) -> int:
             api_key=api_key,
             logger=logger,
         )
-    print(f"\nrunning pipeline (gemini: {'FAKE' if args.fake_gemini else 'live'}, media: {delivery})")
+    print(
+        f"\nrunning pipeline (gemini: {'FAKE' if args.fake_gemini else 'live'}, "
+        f"media: {delivery}, perception model: "
+        f"{args.perception_model or _chunk_job.DEFAULT_GEMINI_FLASH_MODEL})"
+    )
 
     cache = InMemoryPerceptionCache()
+    if args.perception_cache:
+        # Replay a previous run's per-chunk perception so the perception stage
+        # is a cache hit and makes no Gemini calls. Isolates a deliberation or
+        # bundle-assembly change from Gemini's run-to-run variance, which is
+        # large enough to move the episode inventory on its own.
+        cache._values = json.loads(Path(args.perception_cache).read_text())
+        print(f"  replaying perception from {rel(Path(args.perception_cache))}"
+              f" ({len(cache._values)} entries) — perception stage will not call Gemini")
     deps = PipelineDeps(
         object_store=UrlObjectStore(by_key, cache_dir),
         gemini=gemini,
@@ -849,7 +925,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--input", type=Path, default=ROOT / "input" / "input.json")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "input JSON with chunk_urls; repeatable, so one attempt's camera and "
+            "session URL lists can be passed as separate files and merged"
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=ROOT / "output")
     parser.add_argument(
         "--bundle-name",
@@ -906,7 +991,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="run the whole flow with scripted Gemini responses (no API key, no cost)",
     )
-    parser.add_argument("--concurrency", type=int, default=4, help="concurrent Gemini calls")
+    parser.add_argument(
+        "--perception-model",
+        default=None,
+        help=(
+            "override the flash model used for every perception chunk "
+            "(e.g. gemini-3.8-flash); deliberation still uses the pro model"
+        ),
+    )
+    parser.add_argument(
+        "--deliberation-model",
+        default=None,
+        help=(
+            "override the pro model used for the deliberation call "
+            "(e.g. gemini-3.8-flash); perception still uses the flash model"
+        ),
+    )
+    parser.add_argument(
+        "--perception-cache",
+        type=Path,
+        default=None,
+        help=(
+            "replay a previous run's *_perception_cache.json so only deliberation "
+            "calls Gemini; use it to A/B a deliberation change on fixed perception"
+        ),
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=12,
+        help=(
+            "concurrent Gemini calls. Defaults to the worker's "
+            "gemini_per_review_limit, so one local run has the same number of "
+            "calls in flight as one review on the ECS task."
+        ),
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 

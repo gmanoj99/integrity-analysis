@@ -47,10 +47,8 @@ from .rules import (
     parse_integrity_story,
     synthesize_integrity_story_fallback,
     validate_citation_rule,
-    validate_conjunction_rule,
     validate_episode_ref,
     validate_no_fact_invention,
-    validate_smart_student_guard,
     validate_unknown_rule,
     validate_value_resolving_citations,
 )
@@ -530,7 +528,10 @@ def build_deliberation_bundle(
             innocent_explanation_considered=raw_sig.innocent_explanation_considered,
             why_rejected=raw_sig.why_rejected,
             machine_facts_cited=raw_sig.machine_facts_cited,
-            observations_cited=value_result.kept_observations_cited or raw_sig.observations_cited,
+            # Only citations that actually resolved: falling back to the raw
+            # list would readmit the ones validation just dropped, and
+            # CitationRule below is the floor that must stay honest.
+            observations_cited=value_result.kept_observations_cited,
             baseline_metrics_cited=raw_sig.baseline_metrics_cited,
             integrity_story=raw_sig.integrity_story,
         )
@@ -543,15 +544,6 @@ def build_deliberation_bundle(
                 )
             )
             continue
-        if not validate_smart_student_guard(trimmed):
-            rejected.append(
-                RejectedSignal(
-                    signal_type=raw_sig.signal_type,
-                    rejected_by="SmartStudentGuard",
-                    reason="Speed-only signal",
-                )
-            )
-            continue
         if not validate_unknown_rule(trimmed):
             rejected.append(
                 RejectedSignal(
@@ -561,19 +553,14 @@ def build_deliberation_bundle(
                 )
             )
             continue
-        inventory_episode = episode_by_id.get(str(trimmed.episode_ref))
-        if not validate_conjunction_rule(
-            trimmed,
-            episode_factor_ids=inventory_episode.factor_ids if inventory_episode else None,
-        ):
-            rejected.append(
-                RejectedSignal(
-                    signal_type=raw_sig.signal_type,
-                    rejected_by="ConjunctionRule",
-                    reason="Insufficient corroboration",
-                )
-            )
-            continue
+        # No corroboration gate: the model decides whether an episode is a
+        # signal. ConjunctionRule used to require >=2 citations across >=2 of
+        # {machine_facts, observations, baseline}, which a camera-only session
+        # can never satisfy — it has no evidential machine facts and an empty
+        # baseline — so every such signal had to match a hand-maintained
+        # whitelist of "definitive" field combinations or be discarded. The
+        # rules kept below are the anti-hallucination ones: they check that the
+        # model cited something and that what it cited exists.
         if not validate_no_fact_invention(
             trimmed,
             machine_fact_kinds_present,
@@ -589,6 +576,7 @@ def build_deliberation_bundle(
             )
             continue
 
+        inventory_episode = episode_by_id.get(str(trimmed.episode_ref))
         signal_id = f"sig_{len(validated) + 1}_{trimmed.signal_type}"
         emitted_by_episode.setdefault(str(trimmed.episode_ref), []).append(signal_id)
         story = parse_integrity_story(trimmed.integrity_story) or synthesize_integrity_story_fallback(

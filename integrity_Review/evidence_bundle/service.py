@@ -65,60 +65,321 @@ class EvidenceBundleInput:
     baseline_version_hash: str = "unknown"
 
 
-def build_curated_track_b_observations(
-    *,
-    track_b_findings: list[Any],
-    media_index: list,
-    integrity_stories,
-    sections: list[Any] | None = None,
-) -> list[TrackBObservationCard]:
-    cards: list[TrackBObservationCard] = []
+_TITLE_OVERRIDES = {
+    "phone_usage": "Phone usage (candidate)",
+    "suspicious_eye_movement": "Sustained gaze",
+}
+
+_STATUS_RANK = {"confirmed": 0, "cleared": 1, "context": 2, "unknown": 3}
+
+# Speech classes that carry the integrity meaning; preferred when several
+# observations overlap one card's window.
+_INTEGRITY_SPEECH = {
+    "asking_for_answer",
+    "receiving_dictation",
+    "discussing_solution",
+    "reciting_answer_choices",
+}
+
+
+def _humanize(event_type: str) -> str:
+    return _TITLE_OVERRIDES.get(
+        event_type, event_type.replace("_", " ").strip().capitalize()
+    )
+
+
+def _titled(event_type: str, duration_ms: int) -> str:
+    return f"{_humanize(event_type)} · {round(duration_ms / 1000)}s"
+
+
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def _speech_in_window(
+    perception_bundle: Any, window: tuple[int, int]
+) -> tuple[str | None, list[str], str | None]:
+    """Best speech evidence overlapping ``window``.
+
+    The conversation summary is frequently the whole case ("an off-camera voice
+    instructs the candidate to select an option"), and until now it existed only
+    inside the perception bundle, which the review UI never receives.
+    """
+
+    observations = attr(perception_bundle, "observations", default=[]) or []
+    best: tuple[int, Any] | None = None
+    for observation in observations:
+        start = int(attr(observation, "start_ms", "startMs", default=0) or 0)
+        end = int(attr(observation, "end_ms", "endMs", default=start) or start)
+        if not _overlaps((start, max(end, start + 1)), window):
+            continue
+        audio = attr(observation, "audio")
+        summary = attr(audio, "conversation_summary_en", "conversationSummaryEn")
+        if not (isinstance(summary, str) and summary.strip()):
+            continue
+        speech_class = attr(audio, "speech_content_class", "speechContentClass")
+        rank = 1 if speech_class in _INTEGRITY_SPEECH else 0
+        if best is None or rank > best[0]:
+            best = (rank, audio)
+    if best is None:
+        return (None, [], None)
+    audio = best[1]
+    phrases = attr(audio, "notable_phrases_original", "notablePhrasesOriginal", default=[]) or []
+    return (
+        str(attr(audio, "conversation_summary_en", "conversationSummaryEn") or "").strip() or None,
+        [str(p) for p in phrases if str(p).strip()],
+        attr(audio, "speech_language", "speechLanguage"),
+    )
+
+
+def _usable_findings(track_b_findings: list[Any]) -> list[tuple[Any, str, tuple[int, int]]]:
+    """Deterministic findings worth surfacing, with their window."""
+
+    usable: list[tuple[Any, str, tuple[int, int]]] = []
     for finding in track_b_findings:
         event_type = str(attr(finding, "event_type", "eventType", default=""))
-        verdict = attr(finding, "verdict", default="flagged")
-        if verdict != "flagged" or event_type == "ok":
+        if event_type == "ok":
+            continue
+        if attr(finding, "verdict", default="flagged") != "flagged":
             continue
         window = attr(finding, "timestamp_window_ms", "timestampWindowMs", default=(0, 0))
         t0, t1 = int(window[0]), int(window[1])
         duration_ms = max(0, t1 - t0)
-        if event_type == "suspicious_eye_movement" and duration_ms < GAZE_OBSERVATION_DISPLAY_FLOOR_MS:
+        if (
+            event_type == "suspicious_eye_movement"
+            and duration_ms < GAZE_OBSERVATION_DISPLAY_FLOOR_MS
+        ):
             continue
         attribution = attr(finding, "attribution")
         if event_type == "phone_usage" and attribution not in {None, "candidate"}:
             continue
-        nested = next(
+        usable.append((finding, event_type, (t0, t1)))
+    return usable
+
+
+def build_curated_track_b_observations(
+    *,
+    track_b_findings: list[Any],
+    deliberation_bundle: DeliberationBundle,
+    integrity_stories,
+    perception_bundle: Any,
+    media_index: list,
+    contextual_events: Any = None,
+    unknown_panel: Any = None,
+    sections: list[Any] | None = None,
+) -> list[TrackBObservationCard]:
+    """Build the one reviewer-facing card list, carrying the model's verdict.
+
+    Previously this returned only the deterministic ``flagged`` findings, so
+    the UI rendered the pre-deliberation layer and every model judgement was
+    discarded: on one test session four of five cards were interactions the
+    model had explicitly cleared as invigilator or technical staff.
+
+    Now each signal the model emitted becomes a ``confirmed`` card, each
+    episode it dismissed becomes a ``cleared`` card carrying the reason,
+    permitted speech becomes ``context`` and coverage gaps become ``unknown``.
+    Deterministic findings no longer create cards of their own — they attach to
+    whichever card covers their window as ``evidence_refs``, which also
+    collapses the duplicate cards two findings on one window used to produce.
+    """
+
+    stories_by_signal = {story.signal_id: story for story in integrity_stories.stories}
+    signals_by_id = {s.signal_id: s for s in deliberation_bundle.validated_signals}
+    findings = _usable_findings(track_b_findings)
+    claimed: list[tuple[int, int]] = []
+    cards: list[TrackBObservationCard] = []
+
+    def attached(window: tuple[int, int]) -> tuple[list[str], str | None, Any]:
+        """Deterministic findings covering ``window``: refs, detail, strength."""
+
+        matched = [(f, et) for f, et, w in findings if _overlaps(w, window)]
+        refs = sorted({et for _, et in matched})
+        detail = next(
             (
-                story.signal_id
-                for story in integrity_stories.stories
-                if t0 < story.time_range_ms[1] and t1 > story.time_range_ms[0]
+                str(attr(f, "reasoning", default="")).strip()
+                for f, _ in matched
+                if str(attr(f, "reasoning", default="")).strip()
             ),
             None,
         )
-        title = {
-            "phone_usage": "Phone usage (candidate)",
-            "suspicious_eye_movement": "Sustained gaze",
-        }.get(event_type, event_type.replace("_", " ").strip().capitalize())
-        title = f"{title} · {round(duration_ms / 1000)}s"
-        clip_ref = resolve_offset_clip_ref(
-            event_ms=t0,
-            duration_ms=duration_ms,
-            media_index=media_index,
+        strength = next(
+            (
+                attr(f, "evidence_strength", "evidenceStrength")
+                for f, _ in matched
+                if attr(f, "evidence_strength", "evidenceStrength")
+            ),
+            None,
         )
+        return refs, detail, strength
+
+    # 1. Confirmed — one card per signal the model actually emitted.
+    for signal in deliberation_bundle.validated_signals:
+        story = stories_by_signal.get(signal.signal_id)
+        window = (
+            tuple(story.time_range_ms) if story else (0, 0)
+        )
+        t0, t1 = int(window[0]), int(window[1])
+        duration_ms = max(0, t1 - t0)
+        clip_ref = (
+            story.proof.clip_ref
+            if story and story.proof.clip_ref
+            else resolve_offset_clip_ref(
+                event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+            )
+        )
+        refs, detail, strength = attached((t0, t1))
+        summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
+        quotes = list(story.proof.audio_quotes) if story else []
+        cards.append(
+            TrackBObservationCard(
+                id=f"tbobs_{signal.signal_id}",
+                event_type=str(signal.signal_type),
+                title=story.headline if story else _titled(str(signal.signal_type), duration_ms),
+                timestamp_window_ms=(t0, t1),
+                duration_ms=duration_ms,
+                nested_under_signal_id=signal.signal_id,
+                signal_id=signal.signal_id,
+                section_id=(story.section_id if story else None)
+                or resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                clip_ref=clip_ref,
+                detail=detail,
+                evidence_strength=strength,
+                status="confirmed",
+                confidence=signal.confidence,
+                resolution=str(signal.resolution),
+                severity=story.severity if story else None,
+                what_happened=story.what_happened if story else None,
+                why_it_matters=story.why_it_matters if story else None,
+                honest_alternative=story.honest_alternative if story else None,
+                audio_summary=summary,
+                notable_phrases=phrases or quotes,
+                speech_language=language,
+                source_types=[str(s) for s in signal.source_types],
+                evidence_refs=refs,
+            )
+        )
+        claimed.append((t0, t1))
+
+    # 2. Cleared — episodes the model considered and dismissed, with its reason.
+    for episode in deliberation_bundle.episode_analysis:
+        if episode.will_emit_signal and any(
+            sid in signals_by_id for sid in episode.emitted_signal_ids
+        ):
+            continue
+        t0, t1 = int(episode.time_range_ms[0]), int(episode.time_range_ms[1])
+        duration_ms = max(0, t1 - t0)
+        refs, detail, strength = attached((t0, t1))
+        event_type = (
+            episode.suspicious_behavior_type
+            if episode.suspicious_behavior_type not in {"none", ""}
+            else (refs[0] if refs else "reviewed_no_concern")
+        )
+        clip_ref = resolve_offset_clip_ref(
+            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+        )
+        summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
+        cards.append(
+            TrackBObservationCard(
+                id=f"tbobs_cleared_{episode.episode_id}",
+                event_type=str(event_type),
+                title=_titled(str(event_type), duration_ms),
+                timestamp_window_ms=(t0, t1),
+                duration_ms=duration_ms,
+                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                clip_ref=clip_ref,
+                detail=detail or episode.episode_summary or None,
+                evidence_strength=strength,
+                status="cleared",
+                what_happened=episode.episode_summary or None,
+                reason_cleared=episode.reason_not_signalled,
+                audio_summary=summary,
+                notable_phrases=phrases,
+                speech_language=language,
+                evidence_refs=refs,
+            )
+        )
+        claimed.append((t0, t1))
+
+    # 3. Context — permitted interactions (invigilator, technical help).
+    for event in attr(contextual_events, "events", default=[]) or []:
+        t0 = int(event.timestamp_window_ms[0])
+        t1 = int(event.timestamp_window_ms[1])
+        duration_ms = max(0, t1 - t0)
+        clip_ref = resolve_offset_clip_ref(
+            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+        )
+        cards.append(
+            TrackBObservationCard(
+                id=f"tbobs_context_{event.event_type}_{t0}",
+                event_type=str(event.event_type),
+                title=_titled(str(event.event_type), duration_ms),
+                timestamp_window_ms=(t0, t1),
+                duration_ms=duration_ms,
+                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                clip_ref=clip_ref,
+                status="context",
+                audio_summary=event.conversation_summary_en,
+                notable_phrases=list(event.notable_phrases_original or []),
+                speech_language=event.speech_language,
+            )
+        )
+
+    # 4. Unknown — coverage gaps, so "not analysed" never reads as "nothing happened".
+    for interval in attr(unknown_panel, "intervals", default=[]) or []:
+        t0, t1 = int(interval.start_ms), int(interval.end_ms)
+        duration_ms = max(0, int(interval.duration_ms))
+        cards.append(
+            TrackBObservationCard(
+                id=f"tbobs_unknown_{t0}_{t1}",
+                event_type="coverage_gap",
+                title=_titled("coverage_gap", duration_ms),
+                timestamp_window_ms=(t0, t1),
+                duration_ms=duration_ms,
+                status="unknown",
+                detail=str(interval.reason),
+                reason_cleared=str(interval.reason),
+            )
+        )
+
+    # 5. Any flagged finding no episode or signal covers still gets a card,
+    #    so removing the old one-card-per-finding path cannot lose evidence.
+    for finding, event_type, window in findings:
+        if any(_overlaps(window, c) for c in claimed):
+            continue
+        t0, t1 = window
+        duration_ms = max(0, t1 - t0)
+        clip_ref = resolve_offset_clip_ref(
+            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+        )
+        summary, phrases, language = _speech_in_window(perception_bundle, window)
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{event_type}_{t0}_{t1}",
                 event_type=event_type,
-                title=title,
+                title=_titled(event_type, duration_ms),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
-                nested_under_signal_id=nested,
-                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                section_id=resolve_section_id(clip_ref, window, media_index, sections),
                 clip_ref=clip_ref,
-                detail=str(attr(finding, "reasoning", default="")),
+                detail=str(attr(finding, "reasoning", default="")) or None,
                 evidence_strength=attr(finding, "evidence_strength", "evidenceStrength"),
+                status="cleared",
+                reason_cleared="Detected deterministically; not adjudicated by deliberation.",
+                audio_summary=summary,
+                notable_phrases=phrases,
+                speech_language=language,
+                evidence_refs=[event_type],
             )
         )
-    return sorted(cards, key=lambda c: c.timestamp_window_ms[0])
+
+    return sorted(
+        cards,
+        key=lambda c: (
+            _STATUS_RANK.get(c.status, 9),
+            -(c.confidence or 0),
+            c.timestamp_window_ms[0],
+        ),
+    )
 
 
 def _build_confidence_section(
@@ -299,10 +560,19 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         sections=sections,
     )
     track_b_findings = input_data.track_b_findings or []
+    unknown_panel = build_unknown_panel(
+        input_data.perception_bundle,
+        input_data.master_timeline,
+    )
+    contextual_events_section = build_contextual_events_section(input_data.contextual_events)
     track_b_observations = build_curated_track_b_observations(
         track_b_findings=track_b_findings,
-        media_index=media_index,
+        deliberation_bundle=bundle,
         integrity_stories=integrity_stories,
+        perception_bundle=input_data.perception_bundle,
+        media_index=media_index,
+        contextual_events=contextual_events_section,
+        unknown_panel=unknown_panel,
         sections=sections,
     )
     timeline_entries = build_timeline_entries(
@@ -342,14 +612,9 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             emitted_count=sum(1 for e in bundle.episode_analysis if e.will_emit_signal),
         ),
         evidence_timeline=EvidenceTimelineSection(entries=timeline_entries),
-        unknown_panel=build_unknown_panel(
-            input_data.perception_bundle,
-            input_data.master_timeline,
-        ),
+        unknown_panel=unknown_panel,
         smart_student_notes=build_smart_student_notes(bundle, input_data.statistical_baseline),
-        contextual_events=build_contextual_events_section(
-            input_data.contextual_events
-        ),
+        contextual_events=contextual_events_section,
         reviewer_action=ReviewerActionSection(),
         provenance=ProvenanceSection(
             candidate_id=input_data.candidate_id,

@@ -1,6 +1,6 @@
 """Deliberation prompt text (Scope 4)."""
 
-DELIBERATION_PROMPT_VERSION = "scope4-v13"
+DELIBERATION_PROMPT_VERSION = "scope4-v14"
 
 TRACK2_CAPS = {
     "events": 80,
@@ -16,7 +16,7 @@ Reason over structured evidence and produce a reviewer recommendation like notes
 
 TRACK 1 — ADJUDICATE EVERY EPISODE IN THE INVENTORY
 The EPISODE INVENTORY was derived deterministically. Produce exactly ONE episodeAnalysis entry per episodeId, same order. You do NOT invent Track-1 episodeIds.
-An episode may emit a signal when catalogue requirements are met. Multi-modality is preferred but a single unambiguous modality with strong proof may qualify when the catalogue entry is satisfied.
+An episode may emit a signal whenever the evidence supports it. A single modality is sufficient — camera-only sessions carry no machine facts and no baseline, so video and audio observations are often the only evidence that exists. Judge the evidence on its merits and set `confidence` accordingly.
 Session-scoped episodes never suffice alone.
 
 TRACK 2 — OPEN SCAN (bounded)
@@ -26,14 +26,14 @@ For every emitting episode, emit exactly ONE catalogue signal with episodeRef se
 === RULES ===
 
 1. episodeRef MUST be an inventory episodeId with willEmitSignal=true, OR a Track-2 model_ep* you created in episodeAnalysis.
-2. Every signal needs ≥2 citations from ≥2 of {machineFactsCited, observationsCited, baselineMetricsCited}, using verbatim CITATION INVENTORY strings. observationsCited form: "windowId.fieldPath=value". UNKNOWN values are never citable.
+2. Every signal needs ≥1 citation from {machineFactsCited, observationsCited, baselineMetricsCited}, using verbatim CITATION INVENTORY strings. observationsCited form: "windowId.fieldPath=value". UNKNOWN values are never citable. Corroboration across modalities is not required — express your certainty in `confidence` instead, and cite everything that supports the call.
 3. Cite only items listed for that episode, or clearly in range for Track 2.
 4. Smart-student guard: high speed / strong performance alone is NEVER a signal.
 5. No fact invention — copy citation strings verbatim.
 6. In exam_hall/shared_space settings, require interaction evidence; background persons alone are not evidence.
 7. Do not attribute a phone to the candidate when another person is present unless ownership or interaction is clear.
 8. Address citable evidence-strength and attribution priors when present.
-9. DEFINITIVE evidence may satisfy the rule alone: hands.objectInHand=phone; integrity-related audio.speechContentClass; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE. COMBINABLE observations require corroboration.
+9. The catalogue's DEFINITIVE / COMBINABLE labels calibrate `confidence`, they do not gate emission. DEFINITIVE evidence alone (hands.objectInHand=phone; integrity-related audio.speechContentClass; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE) warrants high confidence. A single COMBINABLE observation may still be emitted at correspondingly lower confidence with `resolution: ambiguous`.
 
 === SIGNAL CATALOGUE ===
 

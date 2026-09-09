@@ -59,11 +59,20 @@ def resolve_offset_clip_ref(
     event_ms: int,
     duration_ms: int,
     media_index: list[MediaIndexEntry],
+    single_segment: bool = False,
 ) -> ClipRef | None:
+    """Playback window for ``event_ms`` + ``duration_ms``, as chunk segments.
+
+    ``single_segment`` keeps only the chunk the event starts in and clamps the
+    window to that chunk's end, so a reviewer gets one clip positioned on the
+    evidence instead of a reel of consecutive chunks to scrub through.
+    """
+
     if not media_index:
         return None
     end_ms = event_ms + max(duration_ms, 1)
     segments: list[ClipSegment] = []
+    covered: list[MediaIndexEntry] = []
     for entry in media_index:
         if entry.session_end_ms < event_ms or entry.session_start_ms > end_ms:
             continue
@@ -77,8 +86,37 @@ def resolve_offset_clip_ref(
                 end_ms_local=local_end,
             )
         )
+        covered.append(entry)
     if not segments:
         return None
+    if single_segment:
+        # Keep the chunk the event itself falls in, then slide the window back
+        # inside it far enough to keep its full length. Clamping to whatever
+        # remained after the event turned an anchor in a chunk's final moments
+        # into a clip of a few milliseconds; sliding keeps the moment on screen
+        # and still hands the reviewer one real clip.
+        best = next(
+            (
+                e
+                for e in covered
+                if e.session_start_ms <= event_ms < e.session_start_ms + e.duration_ms
+            ),
+            covered[0],
+        )
+        want = min(max(duration_ms, 1), best.duration_ms)
+        local_start = min(
+            max(0, event_ms - best.session_start_ms), max(0, best.duration_ms - want)
+        )
+        segments = [
+            ClipSegment(
+                chunk_id=best.chunk_id,
+                evidence_type=best.evidence_type,
+                seek_to_ms=local_start,
+                end_ms_local=local_start + want,
+            )
+        ]
+        event_ms = best.session_start_ms + local_start
+        end_ms = event_ms + want
     cache_key = hashlib.sha256(
         f"{event_ms}|{duration_ms}|{','.join(s.chunk_id for s in segments)}".encode()
     ).hexdigest()[:16]
