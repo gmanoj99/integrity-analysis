@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nw-assessments-ai-analysis-backend"
+version = "0.1.0"
+description = "AI analysis backend for NW assessments integrity review pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "boto3>=1.35.0",
+  "google-genai>=1.33.0",
+  "httpx>=0.28.1",
+  "pydantic>=2.11.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "deepdiff>=8.6.0",
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+
+[tool.setuptools.package-dir]
+"nw_assessments_ai_analysis_backend" = "."
+
+[tool.setuptools]
+packages = [
+  "nw_assessments_ai_analysis_backend",
+  "nw_assessments_ai_analysis_backend.adapters",
+  "nw_assessments_ai_analysis_backend.baseline",
+  "nw_assessments_ai_analysis_backend.contracts",
+  "nw_assessments_ai_analysis_backend.correlation",
+  "nw_assessments_ai_analysis_backend.deliberation",
+  "nw_assessments_ai_analysis_backend.evidence_bundle",
+  "nw_assessments_ai_analysis_backend.findings",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline.adapters",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline.seb_logs",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline.seb_logs.analysis",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline.seb_logs.grammars",
+  "nw_assessments_ai_analysis_backend.integrity_review_pipeline.seb_logs.reduction",
+  "nw_assessments_ai_analysis_backend.lib",
+  "nw_assessments_ai_analysis_backend.machine_facts",
+  "nw_assessments_ai_analysis_backend.media",
+  "nw_assessments_ai_analysis_backend.perception",
+  "nw_assessments_ai_analysis_backend.prompts",
+  "nw_assessments_ai_analysis_backend.scoring",
+  "nw_assessments_ai_analysis_backend.timeline",
+  "nw_assessments_ai_analysis_backend.worker",
+]

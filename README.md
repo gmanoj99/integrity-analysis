@@ -39,12 +39,42 @@ docker run --rm \
 ## Isolated AWS test infrastructure
 
 `infra/aws/` is an idempotent boto3 provisioner (no Terraform) for a
-non-production ECS Fargate stack: VPC, KMS, S3, SQS, ECR, Secrets Manager,
-IAM, ECS, and CloudWatch alarms. It does not provision its own CI/CD; an
-externally-owned CodeBuild project runs `infra/aws/cicd/buildspec.yml`,
-which calls `bootstrap` / `apply` / docker build+push / `status` in sequence.
-See `infra/aws/config/beta.json` for the config shape and `infra/aws/cli.py`
+non-production ECS Fargate stack: a dedicated security group, S3, SQS (with
+request/response dead-letter queues), ECR, SSM Parameter Store, IAM, ECS,
+and CloudWatch alarms. The ECS worker is deployed into the enterprise
+backend's existing VPC and private subnets (see `network` in
+`infra/aws/config/beta.json`); this tool never creates, modifies, or
+deletes any VPC, subnet, route table, Internet/NAT Gateway, or Elastic IP.
+It does create and own the worker's own security group inside that VPC
+rather than reusing the existing Lambda security group, since that one has
+inbound rules this worker doesn't need. It does not provision its own CI/CD; an externally-owned CodeBuild
+project runs `infra/aws/cicd/buildspec.yml`, which calls `bootstrap` /
+`apply` / docker build+push / `status` in sequence. See
+`infra/aws/config/beta.json` for the config shape and `infra/aws/cli.py`
 for the `bootstrap` / `plan` / `apply` / `status` / `destroy` commands.
+
+No customer-managed KMS key is used anywhere in this stack: SQS queues
+(and their DLQs), the ECS CloudWatch log group, and the ECR repository are
+all unencrypted or use their service's standard/AWS-owned encryption. Each
+main queue redrives to its own DLQ after 5 failed receives
+(`maxReceiveCount=5`), with a CloudWatch alarm firing if either DLQ is
+non-empty. The `GEMINI_API_KEY` env var is injected into the ECS task from
+an SSM Parameter Store `SecureString` parameter named
+`<project>-<environment>-gemini-api-key` (e.g.
+`nw-assessments-ai-analysis-beta-gemini-api-key`), never created by this
+tool -- set it out-of-band, once per environment:
+
+```bash
+aws ssm put-parameter \
+  --name "nw-assessments-ai-analysis-beta-gemini-api-key" \
+  --type "SecureString" \
+  --value "<GEMINI_API_KEY>" \
+  --overwrite
+```
+
+The ECS execution role can only read SSM parameters whose name starts with
+that same `<project>-<environment>-` prefix, so any future secret must use
+the same prefix to be readable by the task.
 
 ## Input contract
 ```json
