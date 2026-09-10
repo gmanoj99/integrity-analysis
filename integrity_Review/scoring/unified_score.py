@@ -14,7 +14,6 @@ from ..duck_helpers import attr
 from ..deliberation.rules import apply_confidence_caps
 from .merge_analysis import TIME_TOLERANCE_MS, MergedFinding, reconcile_findings
 
-GAZE_OBSERVATION_DISPLAY_FLOOR_MS = 15_000
 
 SIGNAL_TO_TRACK_B_EVENTS: dict[str, frozenset[str]] = {
     "possible_external_consultation": frozenset(
@@ -68,6 +67,11 @@ class UnifiedScore:
     corroborated_signal_ids: list[str]
     capture_quality_cap_applied: bool
     informative_content_cap_applied: bool
+    # Set when the model's own category could not be supported by the signals
+    # that survived validation, with the reason a reviewer needs to see.
+    category_guard_applied: bool = False
+    category_guard_reason: str | None = None
+    model_category: RecommendationCategory | None = None
 
 
 def _signal_time_range(signal: ValidatedSignal) -> tuple[int, int] | None:
@@ -113,28 +117,11 @@ def _track_b_source(finding: MergedFinding) -> EvidenceSourceType:
     return "visual_observation"
 
 
-def _finding_duration_ms(finding: MergedFinding) -> int:
-    window = attr(
-        finding.track_b_finding,
-        "timestamp_window_ms",
-        "timestampWindowMs",
-        default=(0, 0),
-    )
-    try:
-        return max(0, int(window[1]) - int(window[0]))
-    except (TypeError, IndexError, ValueError):
-        return 0
-
-
 def _is_scoreable_track_b(finding: MergedFinding) -> bool:
-    if finding.score_weight <= 0:
-        return False
-    if (
-        finding.event_type == "suspicious_eye_movement"
-        and _finding_duration_ms(finding) < GAZE_OBSERVATION_DISPLAY_FLOOR_MS
-    ):
-        return False
-    return True
+    # No gaze duration floor: a 12-second stare at a phone off-frame is not
+    # less real than a 16-second one, and the model now weighs the duration it
+    # can actually see.
+    return finding.score_weight > 0
 
 
 def _track_b_confidence(finding: MergedFinding) -> float:
@@ -154,14 +141,40 @@ def _track_b_confidence(finding: MergedFinding) -> float:
     return max(0.0, min(1.0, base))
 
 
+def _cited_window_ids(signals: list[ValidatedSignal]) -> set[str]:
+    """Distinct perception windows the signals rest on.
+
+    Three signals quoting one window are one moment seen three ways, not three
+    independent sources — counting them as three is what let a single staff
+    interaction reach STRONG_EVIDENCE at 0.95.
+    """
+
+    windows: set[str] = set()
+    for signal in signals:
+        for citation in signal.observations_cited:
+            window_id = str(citation).split(".", 1)[0].strip()
+            if window_id:
+                windows.add(window_id)
+    return windows
+
+
 def compute_unified_score(
     validated_signals: list[ValidatedSignal],
     track_b_findings: list[Any],
     *,
     usable_window_ratio: float,
     informative_content_ratio: float,
+    model_category: RecommendationCategory | None = None,
+    model_confidence: float | None = None,
 ) -> UnifiedScore:
-    """Merge duplicate evidence and derive the one reviewer-facing recommendation."""
+    """Merge duplicate evidence and settle the reviewer-facing recommendation.
+
+    The model states the category and confidence; this function checks that the
+    signals which survived validation can carry them, and downgrades with a
+    stated reason when they cannot. It no longer decides the verdict itself —
+    a rule cannot tell an invigilator from an accomplice, and one that tried
+    both cleared real cheating and escalated innocent sessions.
+    """
 
     active = [signal for signal in validated_signals if signal.resolution != "honest"]
     reconciled = reconcile_findings([], track_b_findings)
@@ -199,18 +212,47 @@ def compute_unified_score(
     has_concern = bool(active or scoreable)
     has_assisted = any(signal.resolution == "assisted" for signal in active)
     has_corroboration = bool(corroborated)
-    if not has_concern:
-        category: RecommendationCategory = "CLEAR"
-        raw_confidence = 0.5 + 0.5 * min(
-            max(0.0, usable_window_ratio),
-            max(0.0, informative_content_ratio),
+    # Independent means "a second thing was seen", so a second modality or a
+    # second moment both count; three citations of one window do not.
+    independent_evidence = max(len(source_types), len(_cited_window_ids(active)))
+
+    default_confidence = (
+        0.5 + 0.5 * min(max(0.0, usable_window_ratio), max(0.0, informative_content_ratio))
+        if not has_concern
+        else max(confidences, default=0.5)
+    )
+    category: RecommendationCategory = model_category or (
+        "CLEAR"
+        if not has_concern
+        else "STRONG_EVIDENCE"
+        if independent_evidence >= 2 and (has_assisted or has_corroboration)
+        else "REVIEW_REQUIRED"
+    )
+    raw_confidence = default_confidence if model_confidence is None else model_confidence
+
+    guard_reason: str | None = None
+    if category == "STRONG_EVIDENCE":
+        if not has_assisted:
+            guard_reason = (
+                "no surviving signal was resolved as assisted; "
+                "downgraded to REVIEW_REQUIRED"
+            )
+        elif independent_evidence < 2:
+            guard_reason = (
+                "all surviving evidence sits in a single window and modality; "
+                "downgraded to REVIEW_REQUIRED"
+            )
+        if guard_reason:
+            category = "REVIEW_REQUIRED"
+    elif category == "CLEAR" and active:
+        guard_reason = (
+            f"{len(active)} signal(s) survived validation unresolved as honest; "
+            "raised to REVIEW_REQUIRED"
         )
-    elif len(source_types) >= 2 and (has_assisted or has_corroboration):
-        category = "STRONG_EVIDENCE"
-        raw_confidence = max(confidences, default=0.5)
-    else:
         category = "REVIEW_REQUIRED"
-        raw_confidence = max(confidences, default=0.5)
+        raw_confidence = max(confidences, default=raw_confidence)
+    if guard_reason:
+        raw_confidence = min(raw_confidence, max(confidences, default=raw_confidence))
 
     apply_informative_cap = any(
         source in {"visual_observation", "audio_observation"}
@@ -231,11 +273,13 @@ def compute_unified_score(
         corroborated_signal_ids=corroborated,
         capture_quality_cap_applied=capture_cap,
         informative_content_cap_applied=informative_cap,
+        category_guard_applied=guard_reason is not None,
+        category_guard_reason=guard_reason,
+        model_category=model_category,
     )
 
 
 __all__ = [
-    "GAZE_OBSERVATION_DISPLAY_FLOOR_MS",
     "UnifiedScore",
     "compute_unified_score",
 ]

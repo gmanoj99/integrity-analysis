@@ -138,8 +138,13 @@ def _looks_like_clear_prose(text: str) -> bool:
     )
 
 
-def _parse_confidence(value: Any, default: float = 0.5) -> float:
-    """Match TS: only numeric confidence is trusted; strings default to 0.5."""
+# The three verdicts the model may state; anything else falls back to the
+# signal-derived default rather than being trusted.
+RECOMMENDATION_CATEGORIES = frozenset({"CLEAR", "REVIEW_REQUIRED", "STRONG_EVIDENCE"})
+
+
+def _parse_confidence(value: Any, default: float | None = 0.5) -> float | None:
+    """Match TS: only numeric confidence is trusted; strings default."""
     if isinstance(value, (int, float)):
         return max(0.0, min(1.0, float(value)))
     return default
@@ -266,19 +271,66 @@ def _serialize_correlated_signals(bundle: Any | None) -> str:
 
 
 def _build_citation_inventory(machine_facts_bundle: Any, perception_bundle: Any) -> str:
+    """Machine-fact kinds only.
+
+    This block used to restate every observation field as its own
+    ``windowId.fieldPath=value`` line — the same values the perception block
+    already prints — while counting *lines* against a cap of 80. At ~9 lines per
+    window that made only the first nine windows citable, so on a 67-minute
+    session everything after minute four was evidence the model could see and
+    was forbidden to cite. The perception block is now the single citable
+    surface and teaches the format itself.
+    """
+
     facts = getattr(machine_facts_bundle, "facts", []) or []
     kinds = sorted({_fact_kind(f) for f in facts if _fact_kind(f)})
+    return "\n".join(
+        [
+            "=== CITATION INVENTORY ===",
+            "MACHINE_FACT_KINDS (copy a kind verbatim into machineFactsCited):",
+            "  " + (", ".join(kinds) if kinds else "(none)"),
+        ]
+    )
+
+
+def _observation_row(raw: Mapping[str, Any]) -> tuple[list[str], str | None]:
+    """The non-UNKNOWN fields of one observation, plus any speech summary."""
+
+    values: list[str] = []
+    for path in FIELD_PATH_RESOLVERS:
+        node: Any = raw
+        for segment in path.split("."):
+            if not isinstance(node, Mapping) or segment not in node:
+                node = None
+                break
+            node = node[segment]
+        if node is None or str(node).upper() == "UNKNOWN":
+            continue
+        if path == "audio.conversationSummaryEn":
+            continue
+        values.append(f"{path}={str(node).lower() if isinstance(node, bool) else node}")
+    audio = raw.get("audio")
+    summary = (
+        audio.get("conversationSummaryEn") if isinstance(audio, Mapping) else None
+    )
+    return values, summary
+
+
+def _serialize_perception_observations(perception_bundle: Any) -> str:
+    """Every window of the session, grouped, with per-event rows.
+
+    Serialising ``observations[:80]`` in time order silently truncated the
+    evidence to the first 80 events — the opening half hour of a 67-minute
+    session — so nothing later could be judged or cited. There is no row cap
+    here: a window costs a line, an event costs a line, and 183 windows come to
+    roughly 60k characters, which is one ordinary call.
+    """
+
     observations = getattr(perception_bundle, "observations", []) or []
-    lines = [
-        "=== CITATION INVENTORY ===",
-        "MACHINE_FACT_KINDS (copy a kind verbatim into machineFactsCited):",
-        "  " + (", ".join(kinds) if kinds else "(none)"),
-        'OBSERVATION CITATIONS (copy verbatim as "windowId.fieldPath=value"):',
-    ]
-    citation_count = 0
+    windows = getattr(perception_bundle, "windows", []) or []
+
+    by_window: dict[str, list[Mapping[str, Any]]] = {}
     for observation in observations:
-        if citation_count >= TRACK2_CAPS["events"]:
-            break
         raw = (
             observation.model_dump(by_alias=True)
             if hasattr(observation, "model_dump")
@@ -287,69 +339,70 @@ def _build_citation_inventory(machine_facts_bundle: Any, perception_bundle: Any)
             else {}
         )
         window_id = str(raw.get("windowId") or raw.get("window_id") or "")
-        if not window_id:
+        if window_id:
+            by_window.setdefault(window_id, []).append(raw)
+
+    ordered: list[tuple[str, int, int, str | None, bool]] = []
+    seen: set[str] = set()
+    for window in windows:
+        window_id = str(attr(window, "window_id", "windowId") or "")
+        if not window_id or window_id in seen:
             continue
-        for path in FIELD_PATH_RESOLVERS:
-            node: Any = raw
-            for segment in path.split("."):
-                if not isinstance(node, Mapping) or segment not in node:
-                    node = None
-                    break
-                node = node[segment]
-            if node is None or str(node).upper() == "UNKNOWN":
-                continue
-            lines.append(f"  {window_id}.{path}={str(node).lower() if isinstance(node, bool) else node}")
-            citation_count += 1
-            if citation_count >= TRACK2_CAPS["events"]:
-                break
-        audio = raw.get("audio")
-        if isinstance(audio, Mapping) and audio.get("conversationSummaryEn"):
-            lines.append(
-                f"  {window_id}.audio.conversationSummaryEn={audio['conversationSummaryEn']}"
+        seen.add(window_id)
+        ordered.append(
+            (
+                window_id,
+                int(attr(window, "start_ms", "startMs", default=0) or 0),
+                int(attr(window, "end_ms", "endMs", default=0) or 0),
+                attr(window, "phase"),
+                bool(attr(window, "video_available", "videoAvailable")),
             )
-    if citation_count == 0:
-        lines.append("  (none)")
-    lines.extend(
-        [
-            "VALID_FIELD_PATHS:",
-            "  " + ", ".join(FIELD_PATH_RESOLVERS),
-            "UNKNOWN values are not citable.",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _serialize_perception_observations(perception_bundle: Any) -> str:
-    observations = getattr(perception_bundle, "observations", []) or []
-    lines = ["PERCEPTION_OBSERVATIONS:"]
-    for observation in observations[: TRACK2_CAPS["events"]]:
-        raw = (
-            observation.model_dump(by_alias=True)
-            if hasattr(observation, "model_dump")
-            else dict(observation)
-            if isinstance(observation, Mapping)
-            else {}
         )
-        window_id = raw.get("windowId") or raw.get("window_id")
-        values: list[str] = []
-        for path in FIELD_PATH_RESOLVERS:
-            node: Any = raw
-            for segment in path.split("."):
-                if not isinstance(node, Mapping) or segment not in node:
-                    node = None
-                    break
-                node = node[segment]
-            if node is not None and str(node).upper() != "UNKNOWN":
-                values.append(f"{path}={node}")
-        if values:
-            lines.append(
-                f"  - {window_id} [{raw.get('startMs', 0)},{raw.get('endMs', 0)}]: "
-                + "; ".join(values)
+    for window_id, rows in by_window.items():
+        if window_id not in seen:
+            seen.add(window_id)
+            ordered.append(
+                (
+                    window_id,
+                    int(rows[0].get("startMs") or 0),
+                    int(rows[0].get("endMs") or 0),
+                    None,
+                    True,
+                )
             )
-        audio = raw.get("audio")
-        if isinstance(audio, Mapping) and audio.get("conversationSummaryEn"):
-            lines.append(f"    conversationSummaryEn={audio['conversationSummaryEn']}")
-    if len(lines) == 1:
+    ordered.sort(key=lambda item: item[1])
+
+    lines = [
+        "PERCEPTION_OBSERVATIONS — every window of the session, in order.",
+        'Cite as "windowId.fieldPath=value", copying a field=value printed under'
+        " that window verbatim. UNKNOWN is never printed and never citable.",
+        "VALID_FIELD_PATHS: " + ", ".join(FIELD_PATH_RESOLVERS),
+    ]
+    for window_id, start_ms, end_ms, phase, available in ordered:
+        header = f"{window_id} [{start_ms},{end_ms}]"
+        if phase and phase != "live_exam":
+            header += f" {phase}"
+        rows = by_window.get(window_id, [])
+        if not available and not rows:
+            lines.append(f"{header}: NO VIDEO")
+            continue
+        printed = False
+        for raw in sorted(rows, key=lambda item: int(item.get("startMs") or 0)):
+            values, summary = _observation_row(raw)
+            if not values and not summary:
+                continue
+            row_start = int(raw.get("startMs") or start_ms)
+            row_end = int(raw.get("endMs") or end_ms)
+            seconds = max(0, round((row_end - row_start) / 1000))
+            if not printed:
+                lines.append(f"{header}:")
+                printed = True
+            lines.append(f"  [{row_start},{row_end}] {seconds}s: " + "; ".join(values))
+            if summary:
+                lines.append(f"    audio.conversationSummaryEn={summary}")
+        if not printed:
+            lines.append(f"{header}: quiet")
+    if len(lines) == 3:
         lines.append("  (none)")
     return "\n".join(lines)
 
@@ -508,9 +561,13 @@ def build_deliberation_bundle(
     facts = getattr(input_data.machine_facts_bundle, "facts", []) or []
     machine_fact_kinds_present = {_fact_kind(f) for f in facts}
     observations = getattr(input_data.perception_bundle, "observations", []) or []
-    observations_by_window_id = {
-        _attr(o, "window_id", "windowId"): o for o in observations
-    }
+    # A window holds one observation per perception event, so a citation has to
+    # be checked against all of them: the phone the model cited may sit on a
+    # different row than the glance that happened to come first in the chunk.
+    observations_by_window_id: dict[str, list[Any]] = {}
+    for observation in observations:
+        window_id = _attr(observation, "window_id", "windowId")
+        observations_by_window_id.setdefault(window_id, []).append(observation)
     window_ids_present = set(observations_by_window_id.keys())
     episode_by_id = {ep.episode_id: ep for ep in episode_inventory}
 
@@ -718,19 +775,31 @@ def build_deliberation_bundle(
         )
         or 1.0
     )
+    # The model states the verdict; compute_unified_score checks the surviving
+    # signals can carry it and downgrades with a reason when they cannot.
+    raw_category = _pick_raw_text(raw, "category", "category", "")
+    model_category = raw_category if raw_category in RECOMMENDATION_CATEGORIES else None
+    model_confidence = raw.get("confidence")
     unified = compute_unified_score(
         validated,
         input_data.video_findings or [],
         usable_window_ratio=usable_ratio,
         informative_content_ratio=informative_ratio,
+        model_category=model_category,  # type: ignore[arg-type]
+        model_confidence=(
+            _parse_confidence(model_confidence, default=None)  # type: ignore[arg-type]
+            if model_confidence is not None
+            else None
+        ),
     )
     category = unified.category
     final_confidence = unified.confidence
     capture_cap = unified.capture_quality_cap_applied
     informative_cap = unified.informative_content_cap_applied
 
-    raw_category = _pick_raw_text(raw, "category", "category", "REVIEW_REQUIRED")
-    downgraded = raw_category == "STRONG_EVIDENCE" and category != "STRONG_EVIDENCE"
+    downgraded = unified.category_guard_applied or (
+        raw_category == "STRONG_EVIDENCE" and category != "STRONG_EVIDENCE"
+    )
 
     episode_entries = [
         EpisodeAnalysisEntry.model_validate(entry)

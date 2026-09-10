@@ -84,8 +84,21 @@ async def _perception_jobs(
 
 
 def _video_windows(observations: list[PerceptionObservation]) -> list[VideoObservationWindow]:
-    windows: list[VideoObservationWindow] = []
+    """One baseline window per perception window.
+
+    ``usable_window_ratio`` divides these by the window count, so emitting one
+    row per event would count an event-dense chunk several times over. The
+    highest-confidence observation stands for its window.
+    """
+
+    best_by_window: dict[str, PerceptionObservation] = {}
     for observation in observations:
+        current = best_by_window.get(observation.window_id)
+        if current is None or observation.confidence > current.confidence:
+            best_by_window[observation.window_id] = observation
+
+    windows: list[VideoObservationWindow] = []
+    for observation in best_by_window.values():
         gaze = observation.attention.gaze_direction
         windows.append(
             VideoObservationWindow(

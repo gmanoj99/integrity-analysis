@@ -9,7 +9,9 @@ from typing import Any, Literal, Mapping
 from ..duck_helpers import attr, fact_kind, fact_start_ms, fact_end_ms, mapping_view
 from .rules import RawEpisodeAnalysis
 
-EPISODE_INVENTORY_MAX_TIMED = 40
+# Gaze episodes now reach the inventory too, and the keep-sort favours
+# multi-modality, so a 40-slot budget would drop single-modality gaze first.
+EPISODE_INVENTORY_MAX_TIMED = 60
 EPISODE_MERGE_GAP_MS = 30_000
 EPISODE_MAX_SPAN_MS = 90_000
 
@@ -169,7 +171,10 @@ def _collect_video_seeds(video_findings: list[Any]) -> list[EpisodeSeed]:
     seeds: list[EpisodeSeed] = []
     for finding in video_findings:
         verdict = _attr(finding, "verdict")
-        if verdict != "flagged":
+        # "provisional" findings are exactly the ones the model must decide, so
+        # they have to reach the inventory — a signal can only cite an episode
+        # that exists.
+        if verdict not in {"flagged", "provisional"}:
             continue
         window = _attr(finding, "timestamp_window_ms", "timestampWindowMs")
         event_type = _attr(finding, "event_type", "eventType")
@@ -536,5 +541,5 @@ def serialize_episode_inventory(episodes: list[DeliberationEpisode]) -> str:
         for episode in session:
             lines.append(f"  {episode.episode_id} | factorIds={','.join(episode.factor_ids)}")
         lines.append("")
-    lines.append("Only cite windowIds and machineFactKinds listed on the episode you are adjudicating.")
+    lines.append("Prefer the windowIds and machineFactKinds listed on the episode you are adjudicating.")
     return "\n".join(lines)

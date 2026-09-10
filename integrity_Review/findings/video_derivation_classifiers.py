@@ -338,18 +338,11 @@ def classify_gaze(live: list[PerceptionObservation], bundle: PerceptionBundle) -
     )
     merge_gap_ms = DERIVATION_CONFIG["gaze"]["SEGMENT_MERGE_GAP_SEC"] * 1000
     for direction, eps in by_dir.items():
-        if len(eps) < DERIVATION_CONFIG["gaze"]["ANCHOR_MIN_EPISODES"] and not model_recurring:
-            cleared.append(
-                ClearedItem(
-                    event_type="suspicious_eye_movement",
-                    reason="occasional_offscreen_glance",
-                    note=f"Occasional glances toward '{direction}' ({len(eps)} episode(s)).",
-                    window_ids=[wid for e in eps for wid in e.window_ids],
-                    timestamp_window_ms=(min(e.t0 for e in eps), max(e.t1 for e in eps)),
-                    duration_sec=_sec(sum(e.duration_ms for e in eps)),
-                )
-            )
-            continue
+        # Every gaze segment goes to the model as "provisional". Clearing sparse
+        # glances here on an episode count decided the question before anyone
+        # looked at how long the candidate actually looked away, or at what.
+        # The counts and durations below are reported so the model can weigh
+        # them; they no longer gate emission.
         segments = _cluster_gaze_segments(eps, merge_gap_ms)
         session_cumulative_sec = _sec(sum(e.duration_ms for e in eps))
         for segment in segments:
@@ -372,10 +365,12 @@ def classify_gaze(live: list[PerceptionObservation], bundle: PerceptionBundle) -
                     attribution="candidate",
                     severity=gaze_severity,
                     evidence_strength=gaze_evidence,
-                    verdict="flagged",
+                    verdict="provisional",
                     reasoning=(
                         f"Off-screen gaze toward '{direction}' ~{segment_sec}s; "
-                        f"session {len(eps)} episode(s), ~{session_cumulative_sec}s cumulative."
+                        f"session {len(eps)} episode(s), ~{session_cumulative_sec}s cumulative"
+                        + (", recurring pattern reported" if model_recurring else "")
+                        + "."
                     ),
                 )
             )

@@ -331,20 +331,33 @@ def validate_value_resolving_citations(
                 f'Citation "{ref}" is not in windowId.fieldPath=value form',
             )
         window_id, field_path, claimed = parsed
-        observation = observations_by_window_id.get(window_id)
-        if observation is None:
+        window_observations = observations_by_window_id.get(window_id)
+        if not window_observations:
             return RuleResult(False, f'Cited window "{window_id}" does not exist')
+        if isinstance(window_observations, (list, tuple)):
+            candidates = list(window_observations)
+        else:  # a single observation, as older callers and tests pass
+            candidates = [window_observations]
         if field_path not in FIELD_PATH_RESOLVERS:
             # Drop the citation rather than the signal: one stray field path
             # must not discard an otherwise well-evidenced judgement.
             dropped.append(f"{ref} — field path is not citable")
             continue
-        actual = _get_nested(observation, FIELD_PATH_RESOLVERS[field_path])
-        if _is_unknown(actual):
+        # A window holds one observation per event, so the citation resolves if
+        # ANY of them carries the value; it is UNKNOWN only when all of them are.
+        observed = [
+            _get_nested(observation, FIELD_PATH_RESOLVERS[field_path])
+            for observation in candidates
+        ]
+        known = [value for value in observed if not _is_unknown(value)]
+        if not known:
             dropped.append(f"{ref} — observed value is UNKNOWN")
             continue
-        if claimed is not None and str(actual).lower() != claimed.lower():
-            dropped.append(f"{ref} — cited value does not match observed {actual!r}")
+        if claimed is not None and not any(
+            str(value).lower() == claimed.lower() for value in known
+        ):
+            seen = ", ".join(sorted({str(value) for value in known}))
+            dropped.append(f"{ref} — cited value does not match observed {seen!r}")
             continue
         kept.append(ref)
     return RuleResult(True, kept_observations_cited=kept, dropped_citations=dropped)
@@ -509,26 +522,31 @@ def compute_informative_content_ratio(
         for w in windows
         if attr(w, "phase") == "live_exam" and attr(w, "window_id", "windowId")
     }
-    considered = [
-        o
-        for o in observations
-        if attr(o, "video_available", "videoAvailable")
-        and str(attr(o, "window_id", "windowId")) in live_ids
-    ]
-    if not considered:
+    # Judge a window, not each event within it. One observation now covers one
+    # event, so a chunk whose gaze row fills a single field would read as
+    # uninformative on its own and drag the capture-quality cap down with it —
+    # the window is informative if its events together describe it.
+    by_window: dict[str, list[Any]] = {}
+    for observation in observations:
+        if not attr(observation, "video_available", "videoAvailable"):
+            continue
+        window_id = str(attr(observation, "window_id", "windowId"))
+        if window_id in live_ids:
+            by_window.setdefault(window_id, []).append(observation)
+    if not by_window:
         return 1.0, 0, 0
 
-    def informative(obs: Any) -> bool:
-        count = 0
-        for path in INFORMATIVE_FIELD_PATHS:
-            if not _is_unknown(_get_nested(obs, path)):
-                count += 1
-            if count >= 2:
-                return True
-        return False
+    def informative(rows: list[Any]) -> bool:
+        known = {
+            path
+            for row in rows
+            for path in INFORMATIVE_FIELD_PATHS
+            if not _is_unknown(_get_nested(row, path))
+        }
+        return len(known) >= 2
 
-    informative_count = sum(1 for o in considered if informative(o))
-    return informative_count / len(considered), informative_count, len(considered)
+    informative_count = sum(1 for rows in by_window.values() if informative(rows))
+    return informative_count / len(by_window), informative_count, len(by_window)
 
 
 def apply_confidence_caps(

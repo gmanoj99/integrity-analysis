@@ -1,10 +1,11 @@
 """Deliberation prompt text (Scope 4)."""
 
-DELIBERATION_PROMPT_VERSION = "scope4-v14"
+DELIBERATION_PROMPT_VERSION = "scope4-v15"
 
+# The perception block is no longer capped: truncating it to 80 rows hid the
+# back half of every long session from the model. Only the machine-fact detail
+# rows still need a bound, since one fact can carry a large payload.
 TRACK2_CAPS = {
-    "events": 80,
-    "audio_rows": 40,
     "machine_fact_detail_rows": 20,
 }
 
@@ -18,6 +19,8 @@ TRACK 1 — ADJUDICATE EVERY EPISODE IN THE INVENTORY
 The EPISODE INVENTORY was derived deterministically. Produce exactly ONE episodeAnalysis entry per episodeId, same order. You do NOT invent Track-1 episodeIds.
 An episode may emit a signal whenever the evidence supports it. A single modality is sufficient — camera-only sessions carry no machine facts and no baseline, so video and audio observations are often the only evidence that exists. Judge the evidence on its merits and set `confidence` accordingly.
 Session-scoped episodes never suffice alone.
+`provisionalLane=amber` marks an episode deterministic code deliberately did not decide. You decide it: clearing it and emitting from it are equally valid outcomes, and "not enough to say" is a real answer — record it in `reasonNotSignalled`.
+State the honest reading where one fits rather than suppressing it: invigilator or staff contact (people.secondPersonRoleCue=invigilator_or_staff, handing papers, addressing the room), ambient voices in a shared hall with people.candidateRespondingToSecondPerson=no, and the candidate talking to themselves are all normal exam conduct. Clearing them is the correct call, not a missed detection.
 
 TRACK 2 — OPEN SCAN (bounded)
 Beyond the inventory, scan MACHINE FACTS / PERCEPTION EVENTS / BASELINE for cross-modal probable-cheating patterns the inventory missed. Propose new episodes with episodeId "model_ep1", "model_ep2", … (origin model_identified). They MUST pass the same citation and hard rules.
@@ -26,8 +29,8 @@ For every emitting episode, emit exactly ONE catalogue signal with episodeRef se
 === RULES ===
 
 1. episodeRef MUST be an inventory episodeId with willEmitSignal=true, OR a Track-2 model_ep* you created in episodeAnalysis.
-2. Every signal needs ≥1 citation from {machineFactsCited, observationsCited, baselineMetricsCited}, using verbatim CITATION INVENTORY strings. observationsCited form: "windowId.fieldPath=value". UNKNOWN values are never citable. Corroboration across modalities is not required — express your certainty in `confidence` instead, and cite everything that supports the call.
-3. Cite only items listed for that episode, or clearly in range for Track 2.
+2. Every signal needs ≥1 citation from {machineFactsCited, observationsCited, baselineMetricsCited}. Copy machine-fact kinds from the CITATION INVENTORY and observations from the PERCEPTION OBSERVATIONS block, verbatim, as "windowId.fieldPath=value". Every window of the session is listed there and every printed field=value is citable; UNKNOWN is never printed and never citable. Corroboration across modalities is not required — express your certainty in `confidence` instead, and cite everything that supports the call.
+3. Prefer the items listed for the episode you are adjudicating; any window in range may be cited when it genuinely supports the call.
 4. Smart-student guard: high speed / strong performance alone is NEVER a signal.
 5. No fact invention — copy citation strings verbatim.
 6. In exam_hall/shared_space settings, require interaction evidence; background persons alone are not evidence.
@@ -63,7 +66,13 @@ abnormal_paste_workflow
   Internal/reverted/starter-code pastes are not evidence.
 
 suspicious_focus_pattern
-  Require WINDOW_BLUR plus baseline count and a paste, tab switch, or gaze-away event.
+  Off-screen gaze can stand alone — no device, second person, or machine fact is required.
+  Perception rows carry the real per-event duration; weigh duration, direction and recurrence:
+  a single glance under ~5s with no recurrence is honest; a sustained look of ~15s or more toward
+  one target, or the same direction recurring three or more times, is worth emitting at moderate
+  confidence; longer or denser raises it. WINDOW_BLUR, TAB_SWITCH or a paste corroborate when
+  present and lift confidence, but camera-only sessions have none of them.
+  Honest: gazeDirection=down with hands.handActivity=typing or a permitted desk; attentionState=thinking.
 
 abnormal_correction_pattern
   Require TEXT_CORRECTION plus correction baseline anomaly.
@@ -84,11 +93,15 @@ Valid JSON only:
   "episodeAnalysis": [{"episodeId": "", "timeRange": "", "windowIds": [], "machineFactsInRange": [], "episodeSummary": "", "suspiciousBehaviorType": "none", "willEmitSignal": false, "reasonNotSignalled": ""}],
   "candidateSignals": [{"signalType": "", "episodeRef": "", "hypothesis_honest": {"supporting": [], "contradicting": []}, "hypothesis_assisted": {"supporting": [], "contradicting": []}, "resolution": "ambiguous", "confidence": 0.0, "innocentExplanationConsidered": false, "whyRejected": "", "machineFactsCited": [], "observationsCited": [], "baselineMetricsCited": [], "integrityStory": null}],
   "behaviorSummary": "",
+  "category": "CLEAR | REVIEW_REQUIRED | STRONG_EVIDENCE",
+  "confidence": 0.0,
   "recommendation": "",
   "reasoning": "",
   "keyReasons": []
 }
-category and confidence are recomputed in code; surviving signals decide the outcome."""
+`category` and `confidence` are yours — your `recommendation` and `reasoning` are shown to the reviewer as written. Two checks apply afterwards and will downgrade you, so state a verdict the citations carry:
+  STRONG_EVIDENCE needs at least one signal you resolved as `assisted`, and evidence in more than one window or more than one modality — three citations of a single moment are one source, not three.
+  CLEAR needs no surviving signal left unresolved as honest; if something concerns you, say REVIEW_REQUIRED."""
 
 
 def build_deliberation_user_prompt(

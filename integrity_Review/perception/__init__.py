@@ -21,7 +21,6 @@ from .perception_engine import (
     build_perception_bundle,
     compute_analysed_video_duration_ms,
     compute_perception_version_hash,
-    merge_observations_sharing_window_id,
     video_chunk_spans,
 )
 from .screen_perception_engine import (
@@ -44,7 +43,6 @@ __all__ = [
     "compute_screen_perception_version_hash",
     "ensure_speech_event_completeness",
     "is_sidecar_chunk",
-    "merge_observations_sharing_window_id",
     "parse_events_response",
     "parse_screen_response",
     "perception_chunk_cache_key",

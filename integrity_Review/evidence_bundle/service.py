@@ -30,7 +30,6 @@ from .clips import (
     compute_evidence_bundle_version_hash,
     resolve_offset_clip_ref,
 )
-from ..scoring.unified_score import GAZE_OBSERVATION_DISPLAY_FLOOR_MS
 from .section_builders import (
     active_signals,
     build_behavior_summary,
@@ -137,16 +136,10 @@ def _usable_findings(track_b_findings: list[Any]) -> list[tuple[Any, str, tuple[
         event_type = str(attr(finding, "event_type", "eventType", default=""))
         if event_type == "ok":
             continue
-        if attr(finding, "verdict", default="flagged") != "flagged":
+        if attr(finding, "verdict", default="flagged") not in {"flagged", "provisional"}:
             continue
         window = attr(finding, "timestamp_window_ms", "timestampWindowMs", default=(0, 0))
         t0, t1 = int(window[0]), int(window[1])
-        duration_ms = max(0, t1 - t0)
-        if (
-            event_type == "suspicious_eye_movement"
-            and duration_ms < GAZE_OBSERVATION_DISPLAY_FLOOR_MS
-        ):
-            continue
         attribution = attr(finding, "attribution")
         if event_type == "phone_usage" and attribution not in {None, "candidate"}:
             continue
@@ -464,6 +457,7 @@ def _build_detected_signals(
         signals.append(
             DetectedSignalEntry(
                 signal_id=signal.signal_id,
+                card_id=f"tbobs_{signal.signal_id}",
                 supporting_observations=signal.observations_cited,
                 supporting_machine_facts=signal.machine_facts_cited,
                 supporting_baseline_metrics=signal.baseline_metrics_cited,

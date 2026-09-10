@@ -24,7 +24,11 @@ from ..contracts.evidence_bundle import (
     UnknownPanelSection,
 )
 from ..duck_helpers import attr, fact_kind, fact_start_ms, mapping_view
-from ..deliberation.rules import synthesize_integrity_story_fallback
+from ..deliberation.rules import (
+    FIELD_PATH_RESOLVERS,
+    parse_observation_citation,
+    synthesize_integrity_story_fallback,
+)
 from .clips import resolve_offset_clip_ref
 
 LONG_SPAN_MS = 300_000
@@ -190,11 +194,15 @@ def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSe
         else f"{'A concern' if len(active) == 1 else str(len(active)) + ' concerns'} — "
         f"{disposition.lower()}: {labels}."
     )
-    recommendation = (
+    # Prefer what the model actually wrote. The two fixed strings below replaced
+    # its recommendation on every non-clear review, so a reviewer read the same
+    # sentence whether the evidence was a dictated answer or a glance.
+    recommendation = bundle.recommendation.recommendation.strip() or (
         "Escalate for review — strong corroborated evidence from multiple independent sources."
         if bundle.recommendation.category == "STRONG_EVIDENCE"
         else "Review recommended — a behaviour of concern warrants human judgment."
     )
+    reasoning = bundle.recommendation.reasoning.strip() or reasoning
     return RecommendationSection(
         category=bundle.recommendation.category,
         confidence=bundle.recommendation.confidence,
@@ -233,15 +241,46 @@ def build_key_reasons(bundle: DeliberationBundle) -> KeyReasonsSection:
     return KeyReasonsSection(reasons=reasons)
 
 
+def _get_nested_value(obs: Any, path: str) -> Any:
+    cur: Any = mapping_view(obs)
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
 def _observation_for_cite(perception_bundle: Any, cite: str) -> Any | None:
-    window_id = cite.split(".")[0]
-    observations = attr(perception_bundle, "observations", default=[]) or []
-    for obs in observations:
-        if not attr(obs, "video_available", "videoAvailable"):
-            continue
-        if attr(obs, "window_id", "windowId") == window_id:
-            return obs
-    return None
+    """The observation a citation actually refers to.
+
+    A window holds one observation per perception event, so returning the first
+    row in the window would time the signal by whichever event happened to come
+    first — a 3s glance standing in for the 40s phone the citation names. Prefer
+    the row where the cited field really carries the cited value.
+    """
+
+    parsed = parse_observation_citation(cite)
+    window_id = parsed[0] if parsed else cite.split(".")[0]
+    field_path = parsed[1] if parsed else None
+    claimed = parsed[2] if parsed else None
+
+    in_window = [
+        obs
+        for obs in (attr(perception_bundle, "observations", default=[]) or [])
+        if attr(obs, "video_available", "videoAvailable")
+        and attr(obs, "window_id", "windowId") == window_id
+    ]
+    if not in_window:
+        return None
+    resolver = FIELD_PATH_RESOLVERS.get(field_path) if field_path else None
+    if resolver:
+        for obs in in_window:
+            actual = _get_nested_value(obs, resolver)
+            if actual is None or str(actual).upper() == "UNKNOWN":
+                continue
+            if claimed is None or str(actual).lower() == claimed.lower():
+                return obs
+    return in_window[0]
 
 
 def signal_time_span(

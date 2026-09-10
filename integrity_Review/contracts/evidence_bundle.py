@@ -99,6 +99,9 @@ class DetectedSignalEntry(ContractModel):
     """
 
     signal_id: str
+    # The trackBObservations card this signal is rendered under, so the UI can
+    # nest one inside the other without re-deriving the id.
+    card_id: str | None = None
     supporting_observations: list[str] = Field(default_factory=list)
     supporting_machine_facts: list[str] = Field(default_factory=list)
     supporting_baseline_metrics: list[str] = Field(default_factory=list)

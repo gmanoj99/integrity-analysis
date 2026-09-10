@@ -8,10 +8,14 @@ from pydantic import Field
 
 from ..contracts.base import ContractModel
 
-FINDINGS_LOGIC_VERSION = "trackb-v9"
+FINDINGS_LOGIC_VERSION = "trackb-v10"
 
 FindingSource = Literal["video", "keystroke", "screen"]
-FindingVerdict = Literal["flagged", "cleared"]
+# "provisional" means the deterministic classifier found real evidence but has
+# no business deciding what it means — the model adjudicates it. Gaze uses it
+# today: episode counts and duration floors were clearing genuine off-screen
+# stretches before deliberation ever saw them.
+FindingVerdict = Literal["flagged", "provisional", "cleared"]
 FindingSeverity = Literal["high", "medium", "low"]
 EvidenceStrength = Literal["strong", "moderate", "thin"]
 
