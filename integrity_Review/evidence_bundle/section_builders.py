@@ -58,6 +58,30 @@ SIGNAL_HUMAN_LABELS: dict[str, str] = {
 }
 
 
+# What each concern is called when a non-technical reviewer reads it. The
+# detector names in SIGNAL_HUMAN_LABELS are still right for the signal cards,
+# where they sit beside the evidence; at the top of the page they read as
+# system vocabulary, so the summary uses ordinary words instead.
+SIGNAL_PLAIN_PHRASES: dict[str, str] = {
+    "possible_external_consultation": "used a phone or looked something up outside the exam",
+    "possible_second_person_involvement": "been helped by another person",
+    "unauthorized_reference_usage": "referred to material that was not allowed",
+    "abnormal_paste_workflow": "pasted in text from outside the exam",
+    "suspicious_focus_pattern": "repeatedly looked away from the screen",
+    "abnormal_correction_pattern": "made unusual corrections while answering",
+    "typing_cadence_mismatch": "typed in a way that did not match the rest of the session",
+    "inconsistent_interaction_sequence": "behaved inconsistently across the session",
+    "possible_audio_coaching": "been told answers by someone nearby",
+    "possible_remote_dictation": "been read answers by someone not in the room",
+}
+
+
+def plain_signal_phrase(signal_type: str) -> str:
+    return SIGNAL_PLAIN_PHRASES.get(
+        signal_type, signal_type.replace("_", " ").strip()
+    )
+
+
 def to_reviewer_prose(text: str | None) -> str | None:
     if not text:
         return text
@@ -94,51 +118,88 @@ def _looks_like_clear_prose(text: str) -> bool:
             "no significant integrity",
             "no integrity concerns",
             "no concerns were identified",
+            "no malpractice",
             "adequate explanations",
             "no action required",
         )
     )
 
 
+NOTHING_FOUND_TEXT = (
+    "No malpractice was found — the candidate completed the exam on their own, with no phone, "
+    "no other person and no outside help seen or heard at any point."
+)
+NOTHING_FOUND_UNVERIFIED_TEXT = (
+    "No malpractice was found, but some parts of the session could not be checked clearly."
+)
+
+
+def _cleared_moments_text(rejected: int) -> str:
+    """One plain sentence for a session where everything looked at was fine.
+
+    Reviewers here are HR staff, so this never names counts of internal
+    objects or how much of the session was analysable — only, in words, that
+    the questionable moments turned out to be ordinary.
+    """
+
+    if rejected <= 0:
+        return NOTHING_FOUND_TEXT
+    if rejected == 1:
+        return (
+            "No malpractice was found — one moment was checked closely "
+            "and it had a normal explanation."
+        )
+    return (
+        f"No malpractice was found — {rejected} moments were checked closely "
+        "and each had a normal explanation."
+    )
+
+
 def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection:
     active = active_signals(bundle)
     if bundle.recommendation.category == "CLEAR":
-        rejected = bundle.rejected_signal_count
-        suffix = "s" if rejected != 1 else ""
         return BehaviorSummarySection(
-            text=(
-                "No significant integrity concerns were identified during this session. "
-                f"{rejected} behaviour{suffix} were assessed and found to have adequate explanations."
-            )
+            text=_cleared_moments_text(bundle.rejected_signal_count)
         )
     verbatim = (bundle.recommendation.behavior_summary or "").strip()
     if verbatim and active and not _looks_like_clear_prose(verbatim):
         return BehaviorSummarySection(text=verbatim)
     if not active:
-        reasoning = (bundle.recommendation.reasoning or "").strip()
-        if reasoning and not _looks_like_clear_prose(reasoning):
-            return BehaviorSummarySection(text=reasoning[:500])
-        rec = (bundle.recommendation.recommendation or "").strip()
-        if rec and not _looks_like_clear_prose(rec):
-            return BehaviorSummarySection(text=rec[:500])
-        return BehaviorSummarySection(
-            text="Independent evidence findings require human review."
-        )
-    story = active[0].integrity_story
-    if story and story.what_happened:
-        return BehaviorSummarySection(
-            text=f"{story.headline}. {story.what_happened}"[:500]
-        )
-    primary = to_reviewer_prose(active[0].hypothesis_assisted.supporting[0]) if active[0].hypothesis_assisted.supporting else None
-    labels = "; ".join(sorted({humanize_signal_type(s.signal_type) for s in active}))
-    disposition = disposition_prefix(active)
-    if primary:
-        text = f"{primary} ({disposition}: {labels}.)"
+        # Nothing survived adjudication, so the honest thing to tell the
+        # reviewer is that nothing was found — not the old placeholder, which
+        # rendered as a near-empty card. `reasoning` and `recommendation` are
+        # written for the verdict panel and read as jargon at the top of the
+        # page, so they are no longer promoted into the summary.
+        if verbatim and not _looks_like_clear_prose(verbatim):
+            return BehaviorSummarySection(text=verbatim[:500])
+        return BehaviorSummarySection(text=NOTHING_FOUND_UNVERIFIED_TEXT)
+    stories = [s.integrity_story for s in active if s.integrity_story]
+    told = [
+        f"{story.headline.rstrip('. ')}. {story.what_happened}"
+        for story in stories
+        if story.what_happened
+    ]
+    if told:
+        return BehaviorSummarySection(text=" ".join(told)[:600])
+    # Last resort: the model gave us no narrative at all. The old fallback
+    # printed a raw citation string ("w_479874_539881.people.secondPersonVisible
+    # =yes") and detector names straight to the reviewer. Describe the concerns
+    # in the words a non-technical reviewer would use instead.
+    phrases = sorted({plain_signal_phrase(s.signal_type) for s in active})
+    if len(phrases) == 1:
+        concerns = phrases[0]
     else:
-        count = len(active)
-        concern = "concerns" if count > 1 else "concern"
-        text = f"{count} integrity {concern} — {disposition.lower()}: {labels}."
-    return BehaviorSummarySection(text=text)
+        concerns = f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+    # Both leads take a past participle, which is why SIGNAL_PLAIN_PHRASES is
+    # written in that form.
+    lead = (
+        "The candidate was found to have"
+        if disposition_prefix(active) == "Confirmed"
+        else "The candidate may have"
+    )
+    return BehaviorSummarySection(
+        text=f"{lead} {concerns}. A reviewer should watch the moments listed below and decide."
+    )
 
 
 def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSection:

@@ -1,6 +1,6 @@
 """Deliberation prompt text (Scope 4)."""
 
-DELIBERATION_PROMPT_VERSION = "scope4-v15"
+DELIBERATION_PROMPT_VERSION = "scope4-v16"
 
 # The perception block is no longer capped: truncating it to 80 rows hid the
 # back half of every long session from the model. Only the machine-fact detail
@@ -87,6 +87,31 @@ inconsistent_interaction_sequence
 Every emitting signal needs integrityStory: headline, whatHappened, whyItMatters, honestAlternative, severity, involvedQuestions, and proofAnchors.
 Write like a human examiner and do not echo detector templates.
 
+=== SUMMARY FOR THE REVIEWER ===
+`behaviorSummary` is the first thing on the reviewer's screen and is usually the only part read in full.
+It is read by HR and hiring staff who have never seen this system and do not know how it works.
+Write it as if explaining to a colleague what happened in the room. Always write one, in every case.
+
+Content — 4 to 6 sentences, roughly 90 to 140 words:
+  Open with one sentence saying plainly whether the candidate took outside help, and how widespread it was.
+  Then give the specific moments: what happened, roughly when ("at around 13 minutes"), and who was involved.
+  Group repeats rather than listing each ("held a phone on four occasions between 49 and 57 minutes").
+  Name the section from the SECTION MAP for each moment ("In the MCQ section, ...").
+  Name a question number ONLY if one is supplied to you. Never guess one, and say nothing about questions if none is given.
+  Close with what this means for the reviewer's decision.
+
+When nothing was substantiated, say so in ONE plain sentence and stop — no padding, no caveats about the analysis.
+  Example: "No malpractice was found — the candidate completed the exam on their own, with no phone, no other person and no outside help seen or heard at any point."
+
+Language — write for someone non-technical:
+  Never use: behaviour, signal, episode, window, modality, telemetry, machine fact, baseline, evidence source,
+  observation, citation, confidence score, integrity story, or any fieldName / camelCase / snake_case term.
+  Never state how much of the session was analysed or captured — no percentages, no window or chunk counts,
+  no "coverage", no "N of M". If something could not be checked, say "some parts of the session could not be
+  checked clearly" and nothing more precise.
+  Say "the recording of the candidate's screen", not "screen telemetry". Say "another person", not "second person".
+  Say "a phone", not "a mobile device with objectInHand". Plain past tense, no hedging adverbs, no bullet points.
+
 === OUTPUT ===
 Valid JSON only:
 {
@@ -112,6 +137,7 @@ def build_deliberation_user_prompt(
     perception_obs: str,
     baseline_stats: str,
     correlated_signals_text: str = "CORRELATED_SIGNALS:\n  (none)",
+    sections_text: str = "SECTIONS:\n  (none)",
 ) -> str:
     return f"""{citation_inventory}
 
@@ -128,5 +154,8 @@ def build_deliberation_user_prompt(
 
 === DETERMINISTIC CORRELATED SIGNALS (Scope 3.5) ===
 {correlated_signals_text}
+
+=== SECTION MAP ===
+{sections_text}
 
 Produce the JSON object described in the system instructions."""

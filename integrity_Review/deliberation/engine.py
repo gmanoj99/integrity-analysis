@@ -132,6 +132,7 @@ def _looks_like_clear_prose(text: str) -> bool:
             "no significant integrity",
             "no integrity concerns",
             "no concerns were identified",
+            "no malpractice",
             "adequate explanations",
             "no action required",
         )
@@ -267,6 +268,27 @@ def _serialize_correlated_signals(bundle: Any | None) -> str:
         factor = _attr(c, "factor_id", "factorId")
         score = _attr(c, "score_contribution", "scoreContribution")
         lines.append(f"  - {factor}: score={score}")
+    return "\n".join(lines)
+
+
+def _serialize_sections(master_timeline: Any | None) -> str:
+    """The section each moment falls in, so the summary can name it.
+
+    Without this the model has no idea sections exist and can only describe a
+    session as one undifferentiated block. Question numbers are not published
+    here — they are resolved downstream from the activity timeline and are
+    absent on sittings with no submission events.
+    """
+
+    sections = _attr(master_timeline, "sections", default=[]) or []
+    if not sections:
+        return "SECTIONS:\n  (none — treat the session as a single block)"
+    lines = ["SECTIONS (a moment's section is the one whose range contains it):"]
+    for section in sections:
+        label = _attr(section, "label", default="") or _attr(section, "section_id", "sectionId")
+        start = _attr(section, "start_ms", "startMs", default=0)
+        end = _attr(section, "end_ms", "endMs", default=0)
+        lines.append(f"  - {label}: {_fmt_ms(start)}-{_fmt_ms(end)}")
     return "\n".join(lines)
 
 
@@ -506,6 +528,7 @@ def build_deliberation_prompt(input_data: DeliberationInput) -> str:
         correlated_signals_text=_serialize_correlated_signals(
             input_data.correlated_signals
         ),
+        sections_text=_serialize_sections(input_data.master_timeline),
     )
     return f"{DELIBERATION_SYSTEM_PROMPT}\n\n{user_prompt}"
 
@@ -812,8 +835,16 @@ def build_deliberation_bundle(
     recommendation_text = _pick_raw_text(raw, "recommendation", "recommendation")
     reasoning = _pick_raw_text(raw, "reasoning", "reasoning")
     if category != "CLEAR":
+        # `reasoning` and `recommendation` are verdict statements, so reassuring
+        # prose there contradicts a non-CLEAR category and is replaced. The
+        # summary is narrative: when nothing was substantiated, "nothing was
+        # found" is the accurate thing to tell the reviewer, and blanking it is
+        # what left the top card empty. Keep it and add the caveat instead.
         if _looks_like_clear_prose(behavior_summary):
-            behavior_summary = ""
+            behavior_summary = (
+                f"{behavior_summary.rstrip('. ')}. Some parts of the session could not be "
+                "checked clearly, so a reviewer should confirm this."
+            )
         if _looks_like_clear_prose(reasoning):
             reasoning = "Independent evidence findings require human review."
         if _looks_like_clear_prose(recommendation_text):
