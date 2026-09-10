@@ -28,7 +28,7 @@ from .perception import (
 )
 from .perception.perception_engine import compute_perception_version_hash
 from .prompts.deliberation import DELIBERATION_PROMPT_VERSION
-from .prompts.shared import DEFAULT_GEMINI_PRO_MODEL
+from .prompts.shared import DELIBERATION_MODEL
 from .timeline import build_master_timeline
 
 DELIBERATION_ATTEMPTS = 2
@@ -235,7 +235,7 @@ async def _deliberate(
     started = time.perf_counter()
     deps.logger.info(
         "integrity-review: deliberation started",
-        model=DEFAULT_GEMINI_PRO_MODEL,
+        model=DELIBERATION_MODEL,
         prompt_version=DELIBERATION_PROMPT_VERSION,
         prompt_chars=len(prompt),
     )
@@ -243,7 +243,7 @@ async def _deliberate(
         raw_response = await generate_and_log(
             deps,
             step=STEP_DELIBERATION,
-            model=DEFAULT_GEMINI_PRO_MODEL,
+            model=DELIBERATION_MODEL,
             model_version=DELIBERATION_PROMPT_VERSION,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
             config={

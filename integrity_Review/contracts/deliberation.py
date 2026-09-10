@@ -86,6 +86,11 @@ class RejectedSignal(ContractModel):
     signal_type: str
     rejected_by: RejectedByRule
     reason: str
+    # What the model actually claimed, kept so a rejection can be audited.
+    # Without these a discarded signal is unreviewable: there is no way to tell
+    # a hallucinated citation from an id the model wrote in its own format.
+    episode_ref: str | None = None
+    citations: list[str] = Field(default_factory=list)
 
 
 class DeliberationRecommendation(ContractModel):

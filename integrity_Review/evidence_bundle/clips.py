@@ -117,9 +117,6 @@ def resolve_offset_clip_ref(
         ]
         event_ms = best.session_start_ms + local_start
         end_ms = event_ms + want
-    cache_key = hashlib.sha256(
-        f"{event_ms}|{duration_ms}|{','.join(s.chunk_id for s in segments)}".encode()
-    ).hexdigest()[:16]
     # An event derived from a pre-T0 chunk carries a negative session offset;
     # the playback window is clamped to the session start for the same reason as
     # in build_media_index.
@@ -128,7 +125,6 @@ def resolve_offset_clip_ref(
         segments=segments,
         clip_start_ms=clip_start_ms,
         clip_end_ms=max(clip_start_ms, end_ms),
-        cache_key=cache_key,
     )
 
 

@@ -39,6 +39,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 from nw_assessments_ai_analysis_backend.adapters import (
     GoogleGeminiClient,
+    OpenRouterClient,
     InMemoryPerceptionCache,
     NullAiUsageLogger,
     StructuredLogger,
@@ -194,9 +195,19 @@ def identity_from_key(s3_key: str) -> tuple[str, str, str]:
     """
 
     parts = PurePosixPath(s3_key).parts
-    try:
-        anchor = parts.index("user_session_recordings")
-    except ValueError:
+    # Camera recordings carry the same {a}/{b}/{c} triple under their own
+    # prefix, so anchoring only on the session prefix silently reduced a
+    # camera-only attempt to the "local-*" placeholders — and with it the
+    # exam_attempt_id that separates one section from the next.
+    anchor = next(
+        (
+            parts.index(name)
+            for name in ("user_session_recordings", "user_camera_recordings")
+            if name in parts
+        ),
+        None,
+    )
+    if anchor is None:
         return ("local-candidate", "local-assessment", "local-attempt")
     tail = parts[anchor + 1 : anchor + 4]
     if len(tail) < 3:
@@ -269,9 +280,14 @@ def build_staged_payload(
             "cannot place these chunks on a timeline"
         )
 
-    candidate_id, assessment_id, attempt_id = identity_from_key(placeable[0].s3_key)
+    candidate_id, assessment_id, _ = identity_from_key(placeable[0].s3_key)
     candidate_id = overrides.get("candidateId") or candidate_id
     assessment_id = overrides.get("assessmentId") or assessment_id
+    # One review can span several sections, and the backend tells them apart by
+    # examAttemptId — the third path segment. Reading it per chunk instead of
+    # once from the first url is what keeps a two-section sitting a single
+    # review with two sections, rather than one section wearing both.
+    attempt_by_key = {c.s3_key: identity_from_key(c.s3_key)[2] for c in placeable}
 
     # An rrweb batch's own event timestamps beat the filename epoch, which is
     # only the upload time; media chunks already carry a real duration.
@@ -299,7 +315,7 @@ def build_staged_payload(
         manifest_chunks.append(
             {
                 "mediaType": media_type or chunk.media_type,
-                "examAttemptId": attempt_id,
+                "examAttemptId": attempt_by_key[chunk.s3_key],
                 "s3Key": chunk.s3_key,
                 "epochMs": chunk.epoch_ms,
                 "durationMs": duration,
@@ -308,16 +324,35 @@ def build_staged_payload(
 
     t0_ms = min(starts) if starts else min(c.epoch_ms for c in placeable)
     end_ms = max(ends)
+    # One section per examAttemptId, in the order they were sat. A single
+    # attempt keeps the plain --section-id so existing runs are unchanged;
+    # several get "<section-id>1", "<section-id>2", ... so a card's sectionId
+    # still reads as a section rather than a UUID.
+    spans_by_attempt: dict[str, list[int]] = {}
+    for chunk in placeable:
+        attempt = attempt_by_key[chunk.s3_key]
+        span = rrweb_spans.get(chunk.stem) if chunk.role == "rrweb" else None
+        start = span[0] if span else (chunk.start_ms if chunk.start_ms is not None else chunk.epoch_ms)
+        end = span[1] if span else chunk.epoch_ms
+        bounds = spans_by_attempt.setdefault(attempt, [start or 0, end or 0])
+        bounds[0] = min(bounds[0], start or bounds[0])
+        bounds[1] = max(bounds[1], end or bounds[1])
+    ordered_attempts = sorted(spans_by_attempt, key=lambda a: spans_by_attempt[a][0])
+    section_ids = {
+        attempt: (section_id if len(ordered_attempts) == 1 else f"{section_id}{index + 1}")
+        for index, attempt in enumerate(ordered_attempts)
+    }
     sections = overrides.get("sections") or [
         {
-            "sectionId": section_id,
+            "sectionId": section_ids[attempt],
             "examId": f"{assessment_id}-exam",
-            "order": 0,
-            "examAttemptId": attempt_id,
-            "startDatetime": iso_utc(t0_ms),
-            "endDatetime": iso_utc(end_ms),
+            "order": index,
+            "examAttemptId": attempt,
+            "startDatetime": iso_utc(spans_by_attempt[attempt][0]),
+            "endDatetime": iso_utc(spans_by_attempt[attempt][1]),
             "sectionType": section_type,
         }
+        for index, attempt in enumerate(ordered_attempts)
     ]
     activity_logs = overrides.get("activityLogs") or [
         {
@@ -327,20 +362,26 @@ def build_staged_payload(
             "offsetInSeconds": 0,
             "metadata": {},
         },
+        *[
+            entry
+            for index, attempt in enumerate(ordered_attempts)
+            for entry in (
+                {
+                    "order": 1 + index * 2,
+                    "activityType": "SECTION_STARTED",
+                    "creationDatetime": iso_utc(spans_by_attempt[attempt][0]),
+                    "metadata": {"sectionId": section_ids[attempt]},
+                },
+                {
+                    "order": 2 + index * 2,
+                    "activityType": "SECTION_SUBMITTED",
+                    "creationDatetime": iso_utc(spans_by_attempt[attempt][1]),
+                    "metadata": {"sectionId": section_ids[attempt]},
+                },
+            )
+        ],
         {
-            "order": 1,
-            "activityType": "SECTION_STARTED",
-            "creationDatetime": iso_utc(t0_ms),
-            "metadata": {"sectionId": section_id},
-        },
-        {
-            "order": 2,
-            "activityType": "SECTION_SUBMITTED",
-            "creationDatetime": iso_utc(end_ms),
-            "metadata": {"sectionId": section_id},
-        },
-        {
-            "order": 3,
+            "order": 1 + len(ordered_attempts) * 2,
             "activityType": "ALL_SECTIONS_COMPLETED",
             "creationDatetime": iso_utc(end_ms),
             "metadata": {},
@@ -826,8 +867,10 @@ async def run(args: argparse.Namespace) -> int:
         return 0
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key and not args.fake_gemini:
+    if not api_key and not args.fake_gemini and not args.openrouter:
         raise SystemExit("GEMINI_API_KEY is required (or pass --dry-run / --fake-gemini)")
+    if args.openrouter and not os.environ.get("OPENROUTER_API_KEY"):
+        raise SystemExit("--openrouter needs OPENROUTER_API_KEY")
 
     by_key = {chunk.s3_key: chunk.url for chunk in chunks}
     url_to_filename = {chunk.url: chunk.filename for chunk in chunks}
@@ -855,7 +898,25 @@ async def run(args: argparse.Namespace) -> int:
             "local-runner: deliberation model overridden", model=args.deliberation_model
         )
 
-    if args.fake_gemini:
+    if args.openrouter:
+        # Deliberation goes to an OpenRouter-hosted model instead of Gemini.
+        # Perception must come from --perception-cache: this client speaks text
+        # only, so a cache miss fails loudly rather than silently costing money
+        # on a provider that cannot serve the media call anyway.
+        gemini: Any = OpenRouterClient(
+            os.environ["OPENROUTER_API_KEY"],
+            base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            only_model=args.deliberation_model,
+        )
+        delivery = "n/a (openrouter)"
+        install_media_delivery(
+            "inline",
+            cache_dir=cache_dir,
+            url_to_filename=url_to_filename,
+            api_key=api_key,
+            logger=logger,
+        )
+    elif args.fake_gemini:
         # No real call is made, so skip fetching or uploading a single byte.
         gemini: Any = FakeGemini()
         delivery = "stubbed"
@@ -997,6 +1058,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "override the flash model used for every perception chunk "
             "(e.g. gemini-3.8-flash); deliberation still uses the pro model"
+        ),
+    )
+    parser.add_argument(
+        "--openrouter",
+        action="store_true",
+        help=(
+            "send the deliberation call to OpenRouter (OPENROUTER_API_KEY) instead "
+            "of Gemini; requires --perception-cache and an OpenRouter model id "
+            "such as anthropic/claude-opus-5 in --deliberation-model"
         ),
     )
     parser.add_argument(

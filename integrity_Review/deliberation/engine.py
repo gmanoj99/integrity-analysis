@@ -169,6 +169,35 @@ def parse_raw_output(text: str) -> dict[str, Any]:
     return parsed
 
 
+# A recorder may attach its own evidence to a machine fact — this project's
+# WINDOW_BLUR carries a full-page screenshot as a base64 data URI — and
+# json.dumps of that detail put 1.26 MB of image bytes into a single prompt,
+# 98% of its total. The model cannot read an image through a data URI, so the
+# bytes buy nothing; what deliberation needs is that a snapshot exists.
+_MEDIA_URI_RE = re.compile(r"^\s*data:([^;,]*)[;,]", re.I)
+_MAX_DETAIL_VALUE_CHARS = 500
+
+
+def _prompt_safe_detail(detail: Any) -> dict[str, Any]:
+    """Fact detail with media payloads and oversized strings elided."""
+
+    raw = dict(detail) if isinstance(detail, Mapping) else {}
+    safe: dict[str, Any] = {}
+    for key, value in raw.items():
+        if isinstance(value, str):
+            media = _MEDIA_URI_RE.match(value)
+            if media:
+                kind = media.group(1) or "media"
+                safe[key] = f"<{kind} omitted, {len(value)} chars>"
+                continue
+            if len(value) > _MAX_DETAIL_VALUE_CHARS:
+                trimmed = len(value) - _MAX_DETAIL_VALUE_CHARS
+                safe[key] = f"{value[:_MAX_DETAIL_VALUE_CHARS]}… (+{trimmed} chars)"
+                continue
+        safe[key] = value
+    return safe
+
+
 def _serialize_machine_facts(bundle: Any) -> str:
     facts = getattr(bundle, "facts", []) or []
     lines = [
@@ -191,7 +220,8 @@ def _serialize_machine_facts(bundle: Any) -> str:
         detail = _attr(fact, "detail", default={}) or {}
         lines.append(
             f"  - {kind} [{start},{end}] source={_attr(fact, 'evidence_source', 'evidenceSource', default='unknown')} "
-            f"attribution={_attr(fact, 'attribution', default='unclear')} detail={json.dumps(detail, default=str)}"
+            f"attribution={_attr(fact, 'attribution', default='unclear')} "
+            f"detail={json.dumps(_prompt_safe_detail(detail), default=str)}"
         )
     return "\n".join(lines)
 
@@ -495,6 +525,12 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="SignalTypeRule",
                     reason=f'Unknown signal type "{raw_sig.signal_type}"',
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue
@@ -505,6 +541,12 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="EpisodeRefRule",
                     reason=episode_ref.reason or "Invalid episodeRef",
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue
@@ -515,12 +557,21 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="ValueResolutionRule",
                     reason=value_result.reason or "Invalid observation citation",
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue
         trimmed = RawCandidateSignal(
             signal_type=raw_sig.signal_type,
-            episode_ref=raw_sig.episode_ref,
+            # Not necessarily the id the model wrote: a reference that names no
+            # inventory episode is repaired from the windows the signal cites
+            # when exactly one episode owns them all.
+            episode_ref=episode_ref.resolved_episode_ref or raw_sig.episode_ref,
             hypothesis_honest=raw_sig.hypothesis_honest,
             hypothesis_assisted=raw_sig.hypothesis_assisted,
             resolution=raw_sig.resolution,
@@ -536,11 +587,31 @@ def build_deliberation_bundle(
             integrity_story=raw_sig.integrity_story,
         )
         if not validate_citation_rule(trimmed):
+            # "Zero citations" alone cannot distinguish a model that cited
+            # nothing from one whose every citation failed to resolve — the
+            # second is usually a value mismatch, not a hallucination, and only
+            # the drop reasons say which.
+            dropped = value_result.dropped_citations or []
+            if dropped:
+                reason = (
+                    f"All {len(dropped)} observation citation(s) failed to resolve: "
+                    + "; ".join(dropped[:4])
+                )
+            elif raw_sig.observations_cited or raw_sig.machine_facts_cited:
+                reason = "Zero citations survived validation"
+            else:
+                reason = "Zero citations"
             rejected.append(
                 RejectedSignal(
                     signal_type=raw_sig.signal_type,
                     rejected_by="CitationRule",
-                    reason="Zero citations",
+                    reason=reason,
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue
@@ -550,6 +621,12 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="UnknownRule",
                     reason="All observation citations UNKNOWN",
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue
@@ -572,6 +649,12 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="NoFactInventionRule",
                     reason="Cited fact/window/metric missing",
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
                 )
             )
             continue

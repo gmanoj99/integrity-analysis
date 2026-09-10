@@ -20,7 +20,6 @@ from ..contracts.evidence_bundle import (
     RecommendationSection,
     SmartStudentNotesSection,
     SmartStudentNote,
-    TimelineEntry,
     UnknownInterval,
     UnknownPanelSection,
 )
@@ -542,85 +541,6 @@ def build_integrity_stories(
             )
         )
     return IntegrityStoriesSection(stories=stories)
-
-
-def build_timeline_entries(
-    *,
-    deliberation_bundle: DeliberationBundle,
-    machine_facts_bundle: Any,
-    perception_bundle: Any,
-    media_index: list[MediaIndexEntry],
-    covered_windows: int,
-) -> list[TimelineEntry]:
-    entries: list[TimelineEntry] = []
-    active = active_signals(deliberation_bundle)
-    span_by_signal = {
-        signal.signal_id: signal_time_span(signal, perception_bundle, machine_facts_bundle)
-        for signal in active
-    }
-    deduped: dict[str, ValidatedSignal] = {}
-    bucket_ms = 30_000
-    for signal in active:
-        span = span_by_signal[signal.signal_id]
-        key = "|".join(
-            [
-                signal.signal_type,
-                str(round(span["start_ms"] / bucket_ms)),
-                str(round(span["end_ms"] / bucket_ms)),
-            ]
-        )
-        existing = deduped.get(key)
-        if existing is None or signal.confidence > existing.confidence:
-            deduped[key] = signal
-
-    for signal in deduped.values():
-        span = span_by_signal[signal.signal_id]
-        start_ms = int(span["start_ms"])
-        end_ms = int(span["end_ms"])
-        dur_ms = end_ms - start_ms
-        has_duration = dur_ms > 5_000 and end_ms > start_ms
-        multi_modal = len(set(signal.source_types)) >= 2
-        clip_anchor = signal_clip_anchor_ms(
-            start_ms,
-            end_ms,
-            span["observations"],
-            span["facts_used"],
-        )
-        clip_ref = (
-            resolve_offset_clip_ref(
-                event_ms=clip_anchor,
-                duration_ms=OBSERVATION_CLIP_DURATION_MS,
-                media_index=media_index,
-                single_segment=True,
-            )
-            if covered_windows > 0 and media_index
-            else None
-        )
-        entries.append(
-            TimelineEntry(
-                id=str(uuid.uuid4()),
-                category="corroborated_evidence" if multi_modal else "needs_review",
-                timestamp_ms=start_ms,
-                end_ms=end_ms if has_duration else None,
-                duration_ms=dur_ms if has_duration else None,
-                event=humanize_signal_type(signal.signal_type),
-                explanation=to_reviewer_prose(
-                    signal.integrity_story.what_happened if signal.integrity_story else None
-                )
-                or humanize_signal_type(signal.signal_type),
-                confidence=min(signal.confidence, deliberation_bundle.recommendation.confidence),
-                signal_id=signal.signal_id,
-                evidence_source_types=[str(t) for t in signal.source_types],
-                references=[
-                    *signal.observations_cited,
-                    *signal.machine_facts_cited,
-                    *signal.baseline_metrics_cited,
-                ],
-                clip_ref=clip_ref,
-            )
-        )
-    entries.sort(key=lambda e: e.timestamp_ms)
-    return entries
 
 
 def _union_interval_length_ms(intervals: list[tuple[int, int]]) -> int:

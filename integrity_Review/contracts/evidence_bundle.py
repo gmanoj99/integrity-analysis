@@ -30,8 +30,6 @@ class ClipRef(ContractModel):
     segments: list[ClipSegment] = Field(default_factory=list)
     clip_start_ms: int = Field(ge=0)
     clip_end_ms: int = Field(ge=0)
-    cache_key: str
-    midpoint_fallback: bool = False
 
 
 class MediaIndexEntry(ContractModel):
@@ -92,13 +90,15 @@ class HypothesisArmEntry(ContractModel):
 
 
 class DetectedSignalEntry(ContractModel):
+    """The audit trail behind a signal — why it was concluded, and from what.
+
+    Everything a reviewer reads (type, window, confidence, resolution, source
+    types, clip) already lives on the card that references this by ``signalId``.
+    Only the hypotheses and citations are unique to this section, and they are
+    what a disputed decision has to be defended with.
+    """
+
     signal_id: str
-    signal_type: str
-    timestamp_ms: int
-    confidence: float = Field(ge=0, le=1)
-    resolution: SignalResolution
-    section_id: str | None = None
-    source_types: list[str] = Field(default_factory=list)
     supporting_observations: list[str] = Field(default_factory=list)
     supporting_machine_facts: list[str] = Field(default_factory=list)
     supporting_baseline_metrics: list[str] = Field(default_factory=list)
@@ -113,6 +113,8 @@ class RejectedSignalEntry(ContractModel):
     signal_type: str
     rejected_by: str
     reason: str
+    episode_ref: str | None = None
+    citations: list[str] = Field(default_factory=list)
 
 
 class DetectedSignalsSection(ContractModel):
@@ -348,13 +350,18 @@ class EvidenceBundle(ContractModel):
     recommendation: RecommendationSection
     confidence: ConfidenceSection
     key_reasons: KeyReasonsSection
-    integrity_stories: IntegrityStoriesSection
+    # integrity_stories and episode_analysis are deliberately not emitted. Both
+    # remain internal stages: the stories supply every confirmed card's title,
+    # window, clip and prose, and the episode inventory is the reference every
+    # signal must cite to survive validation. Neither is read by the reviewer
+    # UI, so shipping them only inflated the bundle by roughly a fifth.
     track_b_observations: list[TrackBObservationCard] = Field(default_factory=list)
     detected_signals: DetectedSignalsSection
     correlated_patterns: CorrelatedPatternsSection
-    episode_analysis: EpisodeAnalysisSection
-    evidence_timeline: EvidenceTimelineSection
-    unknown_panel: UnknownPanelSection
+    # evidence_timeline and unknown_panel are not emitted: the timeline was a
+    # verbatim second copy of the cards, and the unknown intervals already ship
+    # as the cards with status "unknown". The unknown panel is still built
+    # internally because those cards are derived from it.
     smart_student_notes: SmartStudentNotesSection
     contextual_events: ContextualEventsSection
     reviewer_action: ReviewerActionSection

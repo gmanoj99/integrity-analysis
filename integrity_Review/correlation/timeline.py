@@ -14,6 +14,9 @@ TIMELINE_FACT_KINDS = {
     MachineFactKind.TAB_SWITCH.value,
     MachineFactKind.LARGE_PASTE.value,
     MachineFactKind.PASTE.value,
+    # A paste whose clipboard was never filled by a copy inside the exam came
+    # from outside it, so the copies have to be on the timeline to be absent.
+    MachineFactKind.COPY.value,
     MachineFactKind.TEXT_CORRECTION.value,
     MachineFactKind.ACTIVITY_GAP.value,
     MachineFactKind.TYPING_STARTED.value,

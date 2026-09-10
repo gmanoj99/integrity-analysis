@@ -14,10 +14,8 @@ from ..contracts.evidence_bundle import (
     CorrelatedPatternsSection,
     DetectedSignalEntry,
     DetectedSignalsSection,
-    EpisodeAnalysisSection,
     EvidenceBundle,
     EvidenceSourceEntry,
-    EvidenceTimelineSection,
     HypothesisArmEntry,
     ProvenanceSection,
     RejectedSignalEntry,
@@ -41,7 +39,6 @@ from .section_builders import (
     build_key_reasons,
     build_recommendation_section,
     build_smart_student_notes,
-    build_timeline_entries,
     build_unknown_panel,
     resolve_section_id,
     signal_time_span,
@@ -464,18 +461,9 @@ def _build_detected_signals(
 ) -> DetectedSignalsSection:
     signals: list[DetectedSignalEntry] = []
     for signal in bundle.validated_signals:
-        span = signal_time_span(signal, perception_bundle, machine_facts_bundle)
-        start_ms = int(span["start_ms"])
-        end_ms = int(span["end_ms"])
         signals.append(
             DetectedSignalEntry(
                 signal_id=signal.signal_id,
-                signal_type=signal.signal_type,
-                timestamp_ms=start_ms,
-                confidence=signal.confidence,
-                resolution=signal.resolution,
-                section_id=resolve_section_id(None, (start_ms, end_ms), media_index, sections),
-                source_types=[str(t) for t in signal.source_types],
                 supporting_observations=signal.observations_cited,
                 supporting_machine_facts=signal.machine_facts_cited,
                 supporting_baseline_metrics=signal.baseline_metrics_cited,
@@ -501,6 +489,8 @@ def _build_detected_signals(
                 signal_type=item.signal_type,
                 rejected_by=item.rejected_by,
                 reason=item.reason,
+                episode_ref=item.episode_ref,
+                citations=list(item.citations),
             )
             for item in bundle.rejected_signals
         ],
@@ -575,13 +565,6 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         unknown_panel=unknown_panel,
         sections=sections,
     )
-    timeline_entries = build_timeline_entries(
-        deliberation_bundle=bundle,
-        machine_facts_bundle=input_data.machine_facts_bundle,
-        perception_bundle=input_data.perception_bundle,
-        media_index=media_index,
-        covered_windows=covered_windows,
-    )
     correlated_patterns = _build_correlated_patterns(input_data.correlated_signals)
     return EvidenceBundle(
         candidate_id=input_data.candidate_id,
@@ -597,7 +580,6 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             master_timeline=input_data.master_timeline,
         ),
         key_reasons=build_key_reasons(bundle),
-        integrity_stories=integrity_stories,
         track_b_observations=track_b_observations,
         detected_signals=_build_detected_signals(
             bundle,
@@ -607,12 +589,6 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             sections=sections,
         ),
         correlated_patterns=correlated_patterns,
-        episode_analysis=EpisodeAnalysisSection(
-            episodes=bundle.episode_analysis,
-            emitted_count=sum(1 for e in bundle.episode_analysis if e.will_emit_signal),
-        ),
-        evidence_timeline=EvidenceTimelineSection(entries=timeline_entries),
-        unknown_panel=unknown_panel,
         smart_student_notes=build_smart_student_notes(bundle, input_data.statistical_baseline),
         contextual_events=contextual_events_section,
         reviewer_action=ReviewerActionSection(),

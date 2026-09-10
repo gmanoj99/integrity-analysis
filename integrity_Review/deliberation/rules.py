@@ -18,7 +18,10 @@ from ..contracts.deliberation import (
 from ..duck_helpers import attr, mapping_view
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
 
-DELIBERATION_MODEL_VERSION = "gemini-3.1-pro-preview"
+# Names the model deliberation actually runs on (prompts.shared.DELIBERATION_MODEL).
+# It also feeds the artifact hash, so a model swap must be reflected here or
+# two different runs share a provenance fingerprint.
+DELIBERATION_MODEL_VERSION = "gemini-3.8-flash"
 
 _DELIBERATION_ARTIFACT_HASH = hashlib.sha256(
     f"{DELIBERATION_MODEL_VERSION}|{DELIBERATION_PROMPT_VERSION}".encode()
@@ -194,6 +197,15 @@ class RuleResult:
     ok: bool
     reason: str | None = None
     kept_observations_cited: list[str] | None = None
+    # Why each citation was discarded, in "<citation> — <reason>" form. Dropping
+    # a citation silently and returning ok=True made the loss surface later as
+    # CitationRule's "Zero citations", which reads as "the model cited nothing"
+    # when the truth is often "everything it cited failed to resolve". Reviewers
+    # cannot tell a hallucinated citation from a value mismatch without this.
+    dropped_citations: list[str] | None = None
+    # The inventory episode this signal resolved to, which is not always the id
+    # the model wrote — see resolve_episode_ref_from_windows.
+    resolved_episode_ref: str | None = None
 
 
 def compute_deliberation_version_hash(
@@ -244,6 +256,36 @@ def _get_nested(obs: Any, path: str) -> object:
     return cur
 
 
+def resolve_episode_ref_from_windows(
+    signal: RawCandidateSignal,
+    episodes_by_id: dict[str, RawEpisodeAnalysis],
+) -> str | None:
+    """Recover the episode a signal means from the windows it cites.
+
+    Models that did not write the inventory's exact id — inventing ``model_ep1``
+    is the common shape — still cite real windows, and a window belongs to at
+    most one adjudicated episode. When exactly one episode owns every cited
+    window the reference is unambiguous, so repairing it keeps a well-evidenced
+    judgement that an id mismatch would otherwise discard whole. Anything
+    ambiguous stays rejected: guessing between episodes would attach a signal to
+    the wrong moment, which is worse than losing it.
+    """
+
+    cited_windows = {
+        parsed[0]
+        for parsed in (parse_observation_citation(ref) for ref in signal.observations_cited)
+        if parsed is not None
+    }
+    if not cited_windows:
+        return None
+    owners = [
+        episode_id
+        for episode_id, episode in episodes_by_id.items()
+        if episode.will_emit_signal and cited_windows <= set(episode.window_ids)
+    ]
+    return owners[0] if len(owners) == 1 else None
+
+
 def validate_episode_ref(
     signal: RawCandidateSignal,
     episodes_by_id: dict[str, RawEpisodeAnalysis],
@@ -256,6 +298,13 @@ def validate_episode_ref(
         )
     episode = episodes_by_id.get(ref.strip())
     if episode is None:
+        repaired = resolve_episode_ref_from_windows(signal, episodes_by_id)
+        if repaired is not None:
+            return RuleResult(
+                True,
+                reason=f'episodeRef "{ref}" repaired to "{repaired}" from its cited windows',
+                resolved_episode_ref=repaired,
+            )
         return RuleResult(
             False,
             f'episodeRef "{ref}" is not an episodeId from the deterministic episode inventory',
@@ -265,7 +314,7 @@ def validate_episode_ref(
             False,
             f'episodeRef "{ref}" was adjudicated with willEmitSignal=false',
         )
-    return RuleResult(True)
+    return RuleResult(True, resolved_episode_ref=ref.strip())
 
 
 def validate_value_resolving_citations(
@@ -273,6 +322,7 @@ def validate_value_resolving_citations(
     observations_by_window_id: dict[str, Any],
 ) -> RuleResult:
     kept: list[str] = []
+    dropped: list[str] = []
     for ref in signal.observations_cited:
         parsed = parse_observation_citation(ref)
         if parsed is None:
@@ -287,14 +337,17 @@ def validate_value_resolving_citations(
         if field_path not in FIELD_PATH_RESOLVERS:
             # Drop the citation rather than the signal: one stray field path
             # must not discard an otherwise well-evidenced judgement.
+            dropped.append(f"{ref} — field path is not citable")
             continue
         actual = _get_nested(observation, FIELD_PATH_RESOLVERS[field_path])
         if _is_unknown(actual):
+            dropped.append(f"{ref} — observed value is UNKNOWN")
             continue
         if claimed is not None and str(actual).lower() != claimed.lower():
+            dropped.append(f"{ref} — cited value does not match observed {actual!r}")
             continue
         kept.append(ref)
-    return RuleResult(True, kept_observations_cited=kept)
+    return RuleResult(True, kept_observations_cited=kept, dropped_citations=dropped)
 
 
 def validate_smart_student_guard(signal: RawCandidateSignal) -> bool:

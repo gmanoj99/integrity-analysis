@@ -11,7 +11,7 @@ from ..contracts.base import ContractModel
 from ..machine_facts.contracts import MachineFact
 from ..baseline.contracts import StatisticalBaseline
 
-SCOPE35_LOGIC_VERSION = "scope35-v10"
+SCOPE35_LOGIC_VERSION = "scope35-v11"
 CORRELATED_SCORE_CAP = 100
 CONTRIBUTION_DEDUP_BUCKET_MS = 30_000
 
@@ -52,6 +52,16 @@ WEIGHT_TABLE: dict[str, int] = {
     "external_resource_then_paste": 14,
     "face_absent_during_input": 14,
     "interact_speech_input_correct": 18,
+    # Corroboration pairs that stand on perception and focus telemetry alone —
+    # no question scores, peer cohorts or submissions — so they still fire on a
+    # camera-only attempt, where the rest of this table cannot.
+    "gaze_second_person_interacting": 14,
+    "second_person_discussing": 16,
+    "phone_with_answer_speech": 16,
+    "second_monitor_with_gaze": 18,
+    "blur_burst": 10,
+    "fullscreen_exit_then_input": 14,
+    "paste_without_prior_copy": 18,
 }
 
 FactorId = Literal[tuple(WEIGHT_TABLE.keys())]  # type: ignore[valid-type]
@@ -95,6 +105,23 @@ FACTOR_LABELS: dict[str, str] = {
     "interact_speech_input_correct": (
         "Interaction/speech about a question then input on that question then correct"
     ),
+    "gaze_second_person_interacting": (
+        "Off-screen gaze while a second person is interacting with the candidate"
+    ),
+    "second_person_discussing": (
+        "Second person interacting while the speech is about answers or dictation"
+    ),
+    "phone_with_answer_speech": (
+        "Phone visible while answers are being discussed or dictated"
+    ),
+    "second_monitor_with_gaze": (
+        "Secondary workspace on screen while the candidate gazes off-screen"
+    ),
+    "blur_burst": "Repeated tab switches or focus losses in a short span",
+    "fullscreen_exit_then_input": "Fullscreen lost, then typing or a paste",
+    "paste_without_prior_copy": (
+        "Paste with no matching copy inside the exam — the content came from outside"
+    ),
 }
 
 TimingBasis = Literal["sqb_submission_window", "section_clock", "cohort_only"]
@@ -126,6 +153,13 @@ class CorrelationConfig(ContractModel):
     plagiarism_high_threshold: int = 70
     unattributed_gap_min_seconds: int = 180
     hop_min_reversals: int = 2
+    second_person_cooccur_ms: int = 8_000
+    phone_speech_cooccur_ms: int = 8_000
+    second_monitor_cooccur_ms: int = 8_000
+    blur_burst_window_ms: int = 120_000
+    blur_burst_min_count: int = 3
+    fullscreen_lost_to_input_ms: int = 30_000
+    copy_before_paste_ms: int = 120_000
 
 
 DEFAULT_CORRELATION_CONFIG = CorrelationConfig()
