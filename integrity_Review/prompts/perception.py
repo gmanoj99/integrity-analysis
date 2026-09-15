@@ -480,7 +480,31 @@ Observe what is VISIBLE on the candidate's screen. Report ONLY observable facts.
 
 When pasteCueVisible=yes, extract pastedTextExcerpt (≤300 chars) or null if unreadable.
 When a question number/title is visible, set visibleQuestionRef; else null.
-externalResourceLabels: recognizable non-exam sites/apps; empty array if none."""
+
+THE EXAM INCLUDES A CODE EDITOR.
+Coding sections are answered in an IDE that is part of the exam itself, so a code
+editor, a terminal, a file tree or a run/output panel on screen is normally the
+candidate doing the exam — not a separate application they opened.
+
+Treat an editor as the exam's own when anything ties it to the exam: it shows the
+question text, the provided starter code, run/submit/test controls, the exam
+platform's own chrome or tab, or it is the same window the exam UI is in. In that
+case set foregroundAppClass="exam_ide", keep examUiVisible="yes", and do NOT put
+it in externalResourceLabels.
+
+externalResourceLabels means a destination outside the exam — a search engine, a
+Q&A or tutorial site, documentation, an AI assistant, chat or email, a media or
+social app, a cloud drive. Name an editor there only when it is plainly a
+separate desktop application away from the exam workspace: a different window
+carrying unrelated files or projects, with no exam content in it.
+
+When you cannot tell whether an editor is the exam's own, leave externalResourceLabels
+empty and set foregroundAppClass="exam_ide". A named label here is read downstream as
+proof the candidate opened something external, so guessing costs a candidate their
+result; saying nothing costs only a little certainty.
+
+Label whatever you do list by its plain product name, lowercase with spaces
+("visual studio code", "stack overflow"), so the same app reads the same way twice."""
 
 SCREEN_CAMERA_LAYOUT_RULE = """LAYOUT — THIS CLIP CARRIES BOTH SIGNALS IN ONE FILE.
 

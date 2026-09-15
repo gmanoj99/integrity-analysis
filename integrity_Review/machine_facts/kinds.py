@@ -44,6 +44,12 @@ class MachineFactKind(StrEnum):
     DIFFICULTY_BAND_SCORE = "DIFFICULTY_BAND_SCORE"
     PLAGIARISM_MATCH = "PLAGIARISM_MATCH"
     TEST_RESULT_OBSERVED = "TEST_RESULT_OBSERVED"
+    # A paste seen on screen whose source is NOT established. Kept distinct
+    # from SCREEN_EXTERNAL_PASTE because "the candidate pasted something" and
+    # "the candidate pasted something from outside the exam" are different
+    # claims, and only the second is an accusation. Pasting your own code
+    # inside the exam IDE is ordinary work.
+    SCREEN_PASTE = "SCREEN_PASTE"
     SCREEN_EXTERNAL_PASTE = "SCREEN_EXTERNAL_PASTE"
     SCREEN_EXTERNAL_RESOURCE = "SCREEN_EXTERNAL_RESOURCE"
     SCREEN_AI_ASSISTANT_UI = "SCREEN_AI_ASSISTANT_UI"

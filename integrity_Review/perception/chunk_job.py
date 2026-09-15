@@ -658,8 +658,18 @@ async def analyze_screen_chunk(
 ) -> ScreenObservation:
     cache_key = screen_chunk_cache_key(payload.chunk_id)
     cached = await deps.cache.get(cache_key)
-    if cached and isinstance(cached.get("text"), str):
-        return parse_screen_response(cached["text"], payload)
+    if isinstance(cached, dict):
+        # Two shapes live under this key. A completed job stores the parsed
+        # observation; only a job interrupted before parsing leaves the raw
+        # response. Accepting just the raw form meant the parsed form — the
+        # one actually written on success — never hit, so every re-run
+        # re-analysed every screen chunk and overwrote the good result with
+        # the new one. ``_load_screen_observation`` already reads both; this
+        # is the same test on the write path.
+        if cached.get("chunkId") or cached.get("chunk_id"):
+            return ScreenObservation.model_validate(cached)
+        if isinstance(cached.get("text"), str):
+            return parse_screen_response(cached["text"], payload)
 
     user = build_screen_perception_user_prompt(
         chunk_id=payload.chunk_id,

@@ -9,8 +9,28 @@ from .contracts import EvidenceFinding, EvidenceFindingsResult, KeystrokeProof
 
 PRECURSOR_LOOKBACK_MS = 30_000
 MASS_PASTE_GAP_MS = 60_000
-RAPID_CPS_THRESHOLD = 30
+# 5 chars ≈ 1 word, so chars/second × 12 ≈ words/minute. The old threshold of
+# 30 cps is 360 WPM — well past the ~216 WPM sustained typing record and far
+# past anything reachable while writing code, so in practice it fired only on
+# text that arrived in one blob, which the paste detector already reports.
+# 15 cps ≈ 180 WPM: still faster than any human has sustained on prose, so a
+# false positive stays unlikely, while genuinely superhuman input is caught.
+#
+# This number is reasoned from typing limits, not fitted to our own sessions —
+# the rrweb sittings available when it was set were MCQ-only and carried no
+# sustained typing at all. Re-check it against the avgCharsPerSecond spread on
+# real coding attempts before treating it as settled.
+RAPID_CPS_THRESHOLD = 15
 RAPID_MIN_INSERTION_EVENTS = 3
+# Three quick insertions can be an editor autocompleting or a snippet expanding,
+# and over a few hundred milliseconds that computes to an alarming rate off
+# almost no evidence. A rate only means something once it is sustained.
+RAPID_MIN_DURATION_MS = 2_000
+# A paste happens at an instant. Findings need a non-empty window for a clip to
+# be cut around, so pastes carry this one — it is a handle for the player, not
+# a measurement, and the card marks itself instantaneous so no reviewer is ever
+# shown "1s" as though the paste took a second.
+PASTE_CLIP_WINDOW_MS = 1_000
 
 
 def _mk(
@@ -93,20 +113,27 @@ def derive_keystroke_findings(bundle: MachineFactsBundle) -> EvidenceFindingsRes
             findings.append(
                 _mk(
                     index,
-                    "mass_paste",
+                    "mass_paste" if corroborated else "paste_burst",
                     first.start_offset_ms,
-                    last.start_offset_ms + 1000,
+                    last.start_offset_ms + PASTE_CLIP_WINDOW_MS,
                     severity="high" if total_chars >= 500 and corroborated else "medium",
                     evidence_strength="strong"
                     if total_chars >= 500 and corroborated
                     else "moderate"
                     if corroborated
                     else "thin",
+                    verdict="flagged" if corroborated else "provisional",
                     occurrence_count=len(cluster),
                     reasoning=(
-                        f"{len(cluster)} large external paste event(s)"
+                        f"{len(cluster)} large paste event(s)"
                         f"{f' on question {qn}' if qn is not None else ''} "
-                        f"(~{total_chars} chars total; largest {max_single})."
+                        f"(~{total_chars} chars total; largest {max_single})"
+                        + (
+                            ", following a switch away from the exam."
+                            if corroborated
+                            else " — no switch away from the exam beforehand, "
+                            "so the source is not established."
+                        )
                     ),
                     keystroke_proof=proof,
                 )
@@ -121,19 +148,29 @@ def derive_keystroke_findings(bundle: MachineFactsBundle) -> EvidenceFindingsRes
                 findings.append(
                     _mk(
                         index,
-                        "external_paste",
+                        # rrweb cannot see outside the browser, so the only
+                        # trace of an outside source is the candidate leaving
+                        # the exam just before. Without it this is a paste of
+                        # unknown origin — which is what reusing your own code
+                        # looks like — and must not be called external.
+                        "external_paste" if corroborated else "paste",
                         fact.start_offset_ms,
-                        fact.start_offset_ms + 1000,
+                        fact.start_offset_ms + PASTE_CLIP_WINDOW_MS,
                         severity="high"
                         if chars_added >= 200 and corroborated
                         else "medium",
                         evidence_strength="moderate"
                         if chars_added >= 200 and corroborated
                         else "thin",
+                        verdict="flagged" if corroborated else "provisional",
                         reasoning=(
-                            f"External paste of {chars_added} chars"
+                            f"{'External paste' if corroborated else 'Paste'} "
+                            f"of {chars_added} chars"
                             f"{f' (Q{qn})' if qn is not None else ''} "
                             f"— field reached {total} chars."
+                            + ("" if corroborated
+                               else " No switch away from the exam beforehand, "
+                                    "so the source is not established.")
                         ),
                         keystroke_proof=KeystrokeProof(
                             inserted_char_count=chars_added,
@@ -158,6 +195,8 @@ def derive_keystroke_findings(bundle: MachineFactsBundle) -> EvidenceFindingsRes
             continue
         start_ms = detail.get("typingStartOffsetMs", fact.start_offset_ms)
         duration_ms = detail.get("durationMs") or 0
+        if duration_ms < RAPID_MIN_DURATION_MS:
+            continue
         cps = round(detail.get("avgCharsPerSecond") or 0)
         findings.append(
             _mk(

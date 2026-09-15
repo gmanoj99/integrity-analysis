@@ -508,6 +508,36 @@ def _parse_raw_signals(raw: dict[str, Any]) -> tuple[list[RawEpisodeAnalysis], l
     return episodes, signals
 
 
+def _signal_window_from_citations(
+    signal: Any,
+    observations_by_window_id: dict[str, list[Any]],
+    episode_by_id: dict[str, Any],
+) -> tuple[int, int] | None:
+    """When the signal happened, from the windows it cites.
+
+    The model does not state a time; the citations carry it. Prefer the
+    perception windows the signal actually cited, and fall back to its
+    episode. Returning None disables the in-window fact check rather than
+    guessing a span — a citation is only rejected on positive evidence that
+    the fact belongs elsewhere.
+    """
+
+    spans: list[tuple[int, int]] = []
+    for ref in signal.observations_cited:
+        window_id = str(ref).split(".")[0]
+        for observation in observations_by_window_id.get(window_id, []):
+            start = int(_attr(observation, "start_ms", "startMs", default=0) or 0)
+            end = int(_attr(observation, "end_ms", "endMs", default=start) or start)
+            spans.append((start, max(start, end)))
+    if not spans:
+        episode = episode_by_id.get(str(signal.episode_ref))
+        window = _attr(episode, "time_range_ms", "timeRangeMs") if episode else None
+        if not window:
+            return None
+        return (int(window[0]), int(window[1]))
+    return (min(s for s, _ in spans), max(e for _, e in spans))
+
+
 def build_deliberation_prompt(input_data: DeliberationInput) -> str:
     """Serialize the deterministic Scope 1–3.5 inventory for one Pro call."""
 
@@ -583,6 +613,13 @@ def build_deliberation_bundle(
 
     facts = getattr(input_data.machine_facts_bundle, "facts", []) or []
     machine_fact_kinds_present = {_fact_kind(f) for f in facts}
+    # Where each kind actually occurred, so a citation can be checked against
+    # the signal's own moment rather than against the session's vocabulary.
+    fact_windows_by_kind: dict[str, list[tuple[int, int]]] = {}
+    for fact in facts:
+        start = int(_attr(fact, "start_offset_ms", "startOffsetMs", default=0) or 0)
+        end = int(_attr(fact, "end_offset_ms", "endOffsetMs", default=start) or start)
+        fact_windows_by_kind.setdefault(_fact_kind(fact), []).append((start, max(start, end)))
     observations = getattr(input_data.perception_bundle, "observations", []) or []
     # A window holds one observation per perception event, so a citation has to
     # be checked against all of them: the phone the model cited may sit on a
@@ -718,11 +755,16 @@ def build_deliberation_bundle(
         # whitelist of "definitive" field combinations or be discarded. The
         # rules kept below are the anti-hallucination ones: they check that the
         # model cited something and that what it cited exists.
+        signal_window = _signal_window_from_citations(
+            trimmed, observations_by_window_id, episode_by_id
+        )
         if not validate_no_fact_invention(
             trimmed,
             machine_fact_kinds_present,
             window_ids_present,
             set(KNOWN_BASELINE_METRICS),
+            fact_windows_by_kind=fact_windows_by_kind,
+            signal_window_ms=signal_window,
         ):
             rejected.append(
                 RejectedSignal(

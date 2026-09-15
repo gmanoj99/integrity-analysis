@@ -29,7 +29,7 @@ from ..deliberation.rules import (
     parse_observation_citation,
     synthesize_integrity_story_fallback,
 )
-from .clips import resolve_offset_clip_ref
+from .clips import evidence_stream_for_event, resolve_offset_clip_ref
 
 LONG_SPAN_MS = 300_000
 OBSERVATION_CLIP_DURATION_MS = 20_000
@@ -589,6 +589,7 @@ def build_integrity_stories(
                 duration_ms=max(OBSERVATION_CLIP_DURATION_MS, evidence_end - evidence_start),
                 media_index=media_index,
                 single_segment=True,
+                prefer_evidence_type=evidence_stream_for_event(signal.signal_type),
             )
             if covered_windows > 0 and media_index
             else None

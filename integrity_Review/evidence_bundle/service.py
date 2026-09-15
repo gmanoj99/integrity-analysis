@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from ..contracts.deliberation import DeliberationBundle, ValidatedSignal
 from ..contracts.evidence_bundle import (
+    CorrelatedPatternMoment,
+    CorrelatedPatternProof,
+    KeystrokeEvidence,
     ConfidenceSection,
     CorrelatedPatternEntry,
     CorrelatedPatternEvent,
@@ -25,6 +29,7 @@ from ..contracts.evidence_bundle import (
 from ..duck_helpers import attr
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
 from .clips import (
+    evidence_stream_for_event,
     EVIDENCE_BUNDLE_LOGIC_VERSION,
     build_media_index,
     compute_evidence_bundle_version_hash,
@@ -84,8 +89,17 @@ def _humanize(event_type: str) -> str:
     )
 
 
-def _titled(event_type: str, duration_ms: int) -> str:
-    return f"{_humanize(event_type)} · {round(duration_ms / 1000)}s"
+def _titled(event_type: str) -> str:
+    """The card's title — the event, named, and nothing else.
+
+    This used to append "· {n}s", which the UI then rendered beside its own
+    duration column: the same number twice, once inside a string it could not
+    format or suppress. Duration travels in ``duration_ms``; instantaneous
+    events (a paste carries a synthetic 1s window) have nothing worth showing
+    there at all, which the title must not pre-empt.
+    """
+
+    return _humanize(event_type)
 
 
 def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
@@ -126,6 +140,68 @@ def _speech_in_window(
         [str(p) for p in phrases if str(p).strip()],
         attr(audio, "speech_language", "speechLanguage"),
     )
+
+
+# Events that happen at a point in time. Their findings carry a synthetic
+# window (keystroke.py gives a paste 1s) purely so a clip can be cut around
+# them, so the duration is an artefact and must not be shown as one.
+INSTANTANEOUS_EVENT_TYPES = frozenset({
+    "external_paste",
+    "mass_paste",
+    "screen_external_paste",
+    "answer_appeared",
+})
+
+
+@dataclass(frozen=True)
+class AttachedFindings:
+    """The deterministic findings covering one card's window."""
+
+    refs: list[str]
+    detail: str | None
+    strength: Any
+    keystroke_evidence: KeystrokeEvidence | None = None
+    is_instantaneous: bool = False
+
+
+def _inserted_chars(finding: Any) -> int:
+    proof = attr(finding, "keystroke_proof", "keystrokeProof")
+    return int(attr(proof, "inserted_char_count", "insertedCharCount", default=0) or 0)
+
+
+def _keystroke_evidence(finding: Any) -> KeystrokeEvidence | None:
+    """The pasted text behind a finding, from whichever proof carries it.
+
+    A paste seen in the screen recording lands in ``screen_proof``, not
+    ``keystroke_proof`` — different detector, different contract, same thing
+    as far as a reviewer is concerned. Reading only the keystroke side meant
+    that on a session with no rrweb telemetry the card said "external paste"
+    and showed nothing, while the OCR'd code sat in the bundle unused.
+    """
+
+    if finding is None:
+        return None
+    proof = attr(finding, "keystroke_proof", "keystrokeProof")
+    screen_proof = attr(finding, "screen_proof", "screenProof")
+    if proof is None and screen_proof is None:
+        return None
+    if proof is None:
+        return KeystrokeEvidence(
+            pasted_excerpt=attr(screen_proof, "pasted_excerpt", "pastedExcerpt"),
+        ) if attr(screen_proof, "pasted_excerpt", "pastedExcerpt") else None
+    evidence = KeystrokeEvidence(
+        pasted_excerpt=attr(proof, "pasted_excerpt", "pastedExcerpt")
+        or attr(screen_proof, "pasted_excerpt", "pastedExcerpt"),
+        inserted_char_count=attr(proof, "inserted_char_count", "insertedCharCount"),
+        final_value_length=attr(proof, "final_value_length", "finalValueLength"),
+        preceding_gap_ms=attr(proof, "preceding_gap_ms", "precedingGapMs"),
+        keystrokes_in_window=attr(proof, "keystrokes_in_window", "keystrokesInWindow"),
+        field_id=attr(proof, "field_id", "fieldId"),
+    )
+    # An all-empty proof is noise on the card, not evidence.
+    if not evidence.model_dump(exclude_none=True):
+        return None
+    return evidence
 
 
 def _usable_findings(track_b_findings: list[Any]) -> list[tuple[Any, str, tuple[int, int]]]:
@@ -179,8 +255,8 @@ def build_curated_track_b_observations(
     claimed: list[tuple[int, int]] = []
     cards: list[TrackBObservationCard] = []
 
-    def attached(window: tuple[int, int]) -> tuple[list[str], str | None, Any]:
-        """Deterministic findings covering ``window``: refs, detail, strength."""
+    def attached(window: tuple[int, int]) -> AttachedFindings:
+        """Deterministic findings covering ``window``."""
 
         matched = [(f, et) for f, et, w in findings if _overlaps(w, window)]
         refs = sorted({et for _, et in matched})
@@ -200,7 +276,28 @@ def build_curated_track_b_observations(
             ),
             None,
         )
-        return refs, detail, strength
+        # The largest paste when several land in one window: a reviewer
+        # scanning a card wants the strongest instance, not the first.
+        keystroke = _keystroke_evidence(
+            max(
+                (
+                    f for f, _ in matched
+                    if attr(f, "keystroke_proof", "keystrokeProof")
+                    or attr(f, "screen_proof", "screenProof")
+                ),
+                key=lambda f: _inserted_chars(f),
+                default=None,
+            )
+        )
+        return AttachedFindings(
+            refs=refs,
+            detail=detail,
+            strength=strength,
+            keystroke_evidence=keystroke,
+            is_instantaneous=bool(matched) and all(
+                et in INSTANTANEOUS_EVENT_TYPES for _, et in matched
+            ),
+        )
 
     # 1. Confirmed — one card per signal the model actually emitted.
     for signal in deliberation_bundle.validated_signals:
@@ -214,17 +311,20 @@ def build_curated_track_b_observations(
             story.proof.clip_ref
             if story and story.proof.clip_ref
             else resolve_offset_clip_ref(
-                event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+                event_ms=t0,
+                duration_ms=max(duration_ms, 1),
+                media_index=media_index,
+                prefer_evidence_type=evidence_stream_for_event(str(signal.signal_type)),
             )
         )
-        refs, detail, strength = attached((t0, t1))
+        found = attached((t0, t1))
         summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
         quotes = list(story.proof.audio_quotes) if story else []
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{signal.signal_id}",
                 event_type=str(signal.signal_type),
-                title=story.headline if story else _titled(str(signal.signal_type), duration_ms),
+                title=story.headline if story else _titled(str(signal.signal_type)),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 nested_under_signal_id=signal.signal_id,
@@ -232,8 +332,8 @@ def build_curated_track_b_observations(
                 section_id=(story.section_id if story else None)
                 or resolve_section_id(clip_ref, (t0, t1), media_index, sections),
                 clip_ref=clip_ref,
-                detail=detail,
-                evidence_strength=strength,
+                detail=found.detail,
+                evidence_strength=found.strength,
                 status="confirmed",
                 confidence=signal.confidence,
                 resolution=str(signal.resolution),
@@ -245,7 +345,9 @@ def build_curated_track_b_observations(
                 notable_phrases=phrases or quotes,
                 speech_language=language,
                 source_types=[str(s) for s in signal.source_types],
-                evidence_refs=refs,
+                keystroke_evidence=found.keystroke_evidence,
+                is_instantaneous=found.is_instantaneous,
+                evidence_refs=found.refs,
             )
         )
         claimed.append((t0, t1))
@@ -258,34 +360,39 @@ def build_curated_track_b_observations(
             continue
         t0, t1 = int(episode.time_range_ms[0]), int(episode.time_range_ms[1])
         duration_ms = max(0, t1 - t0)
-        refs, detail, strength = attached((t0, t1))
+        found = attached((t0, t1))
         event_type = (
             episode.suspicious_behavior_type
             if episode.suspicious_behavior_type not in {"none", ""}
-            else (refs[0] if refs else "reviewed_no_concern")
+            else (found.refs[0] if found.refs else "reviewed_no_concern")
         )
         clip_ref = resolve_offset_clip_ref(
-            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+            event_ms=t0,
+            duration_ms=max(duration_ms, 1),
+            media_index=media_index,
+            prefer_evidence_type=evidence_stream_for_event(str(event_type)),
         )
         summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_cleared_{episode.episode_id}",
                 event_type=str(event_type),
-                title=_titled(str(event_type), duration_ms),
+                title=_titled(str(event_type)),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
                 clip_ref=clip_ref,
-                detail=detail or episode.episode_summary or None,
-                evidence_strength=strength,
+                detail=found.detail or episode.episode_summary or None,
+                evidence_strength=found.strength,
                 status="cleared",
                 what_happened=episode.episode_summary or None,
                 reason_cleared=episode.reason_not_signalled,
                 audio_summary=summary,
                 notable_phrases=phrases,
                 speech_language=language,
-                evidence_refs=refs,
+                keystroke_evidence=found.keystroke_evidence,
+                is_instantaneous=found.is_instantaneous,
+                evidence_refs=found.refs,
             )
         )
         claimed.append((t0, t1))
@@ -296,13 +403,16 @@ def build_curated_track_b_observations(
         t1 = int(event.timestamp_window_ms[1])
         duration_ms = max(0, t1 - t0)
         clip_ref = resolve_offset_clip_ref(
-            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+            event_ms=t0,
+            duration_ms=max(duration_ms, 1),
+            media_index=media_index,
+            prefer_evidence_type=evidence_stream_for_event(str(event.event_type)),
         )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_context_{event.event_type}_{t0}",
                 event_type=str(event.event_type),
-                title=_titled(str(event.event_type), duration_ms),
+                title=_titled(str(event.event_type)),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
@@ -322,7 +432,7 @@ def build_curated_track_b_observations(
             TrackBObservationCard(
                 id=f"tbobs_unknown_{t0}_{t1}",
                 event_type="coverage_gap",
-                title=_titled("coverage_gap", duration_ms),
+                title=_titled("coverage_gap"),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 status="unknown",
@@ -339,14 +449,17 @@ def build_curated_track_b_observations(
         t0, t1 = window
         duration_ms = max(0, t1 - t0)
         clip_ref = resolve_offset_clip_ref(
-            event_ms=t0, duration_ms=max(duration_ms, 1), media_index=media_index
+            event_ms=t0,
+            duration_ms=max(duration_ms, 1),
+            media_index=media_index,
+            prefer_evidence_type=evidence_stream_for_event(event_type),
         )
         summary, phrases, language = _speech_in_window(perception_bundle, window)
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{event_type}_{t0}_{t1}",
                 event_type=event_type,
-                title=_titled(event_type, duration_ms),
+                title=_titled(event_type),
                 timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 section_id=resolve_section_id(clip_ref, window, media_index, sections),
@@ -358,6 +471,8 @@ def build_curated_track_b_observations(
                 audio_summary=summary,
                 notable_phrases=phrases,
                 speech_language=language,
+                keystroke_evidence=_keystroke_evidence(finding),
+                is_instantaneous=event_type in INSTANTANEOUS_EVENT_TYPES,
                 evidence_refs=[event_type],
             )
         )
@@ -410,6 +525,9 @@ def _build_confidence_section(
         for span in screen_spans
     )
     session_duration_ms = max(0, int(attr(master_timeline, "duration_ms", "durationMs", default=0) or 0))
+    keystroke_analysed = (
+        str(attr(machine_facts_bundle, "exam_mode", "examMode", default="none")) == "rrweb"
+    )
     screen_coverage_label = None
     if screen_spans:
         if session_duration_ms > 0:
@@ -435,12 +553,12 @@ def _build_confidence_section(
             else f"{round((covered / max(1, total)) * 100)}% video ({covered}/{total} windows)"
         ),
         keystroke_coverage_label=(
-            "keystroke telemetry available"
-            if str(attr(machine_facts_bundle, "exam_mode", "examMode", default="none"))
-            == "rrweb"
-            else None
+            "keystroke telemetry available" if keystroke_analysed else None
         ),
         screen_coverage_label=screen_coverage_label,
+        video_analysed=covered > 0,
+        screen_analysed=bool(screen_spans),
+        keystroke_analysed=keystroke_analysed,
     )
 
 
@@ -491,27 +609,298 @@ def _build_detected_signals(
     )
 
 
-def _build_correlated_patterns(correlated_signals: Any | None) -> CorrelatedPatternsSection:
+# Internal event names as a reviewer would say them. The correlation
+# detectors write their rationale in the vocabulary of the layer below —
+# "suspicious_eye_movement co-occurs with external_help" — which is accurate
+# and unreadable to the HR reviewer this report is for.
+CORRELATION_TERMS: dict[str, str] = {
+    "suspicious_eye_movement": "the candidate looked away from the screen",
+    "external_help": "another person was interacting with the candidate",
+    "phone_usage": "a phone was visible",
+    "no_candidate": "the candidate was not in frame",
+    "external_resource_open": "a non-exam app or site was open on screen",
+    "secondary_workspace_visible": "a second screen was in use",
+    "external_paste": "text was pasted in from outside the exam",
+    "mass_paste": "several large blocks of text were pasted in",
+    "MCQ_ANSWER_SELECTED": "an answer was selected",
+    "discussing_solution": "discussing the solution",
+    "receiving_dictation": "receiving dictation",
+    "reciting_answer_choices": "reciting the answer choices",
+    "asking_for_answer": "asking for an answer",
+    "technical_exam_help": "asking for technical help",
+}
+
+_SECONDS = lambda ms: f"{round(int(ms) / 1000)} second{'' if round(int(ms) / 1000) == 1 else 's'}"
+
+
+def _term(token: str) -> str:
+    return CORRELATION_TERMS.get(token, token.replace("_", " "))
+
+
+# Every rationale the detectors emit matches one of these shapes; the fallback
+# below covers any that does not, so a new detector degrades rather than leaks.
+CORRELATION_RATIONALE_TEMPLATES: tuple[tuple[re.Pattern[str], Any], ...] = (
+    (
+        re.compile(r"^(\w+) co-occurs with speech classified (\w+) \(within (\d+)ms\)$"),
+        lambda m: f"{_term(m[1]).capitalize()} while the conversation was "
+                  f"{_term(m[2])} — the two within {_SECONDS(m[3])} of each other.",
+    ),
+    (
+        re.compile(r"^(\w+) co-occurs with (\w+) \(within (\d+)ms\)$"),
+        lambda m: f"{_term(m[1]).capitalize()} and {_term(m[2])}, "
+                  f"within {_SECONDS(m[3])} of each other.",
+    ),
+    (
+        re.compile(r"^(\w+) ended then (\w+) (\d+)ms later \(no intervening activity\)$"),
+        lambda m: f"{_term(m[1]).capitalize()}, then {_term(m[2])} "
+                  f"{_SECONDS(m[3])} later with nothing in between.",
+    ),
+    (
+        re.compile(r"^(\d+) focus losses within (\d+)ms \(window \d+ms\)$"),
+        lambda m: f"The candidate left the exam window {m[1]} times "
+                  f"in {_SECONDS(m[2])}.",
+    ),
+    (
+        re.compile(r"^(\w+) overlapping screen/input activity \((\w+)\)$"),
+        lambda m: f"{_term(m[1]).capitalize()} while {_term(m[2])}.",
+    ),
+)
+
+
+def humanize_correlation_rationale(rationale: str, label: str) -> str | None:
+    """The detector's rationale, restated for a non-technical reviewer."""
+
+    text = (rationale or "").strip()
+    if not text:
+        return None
+    for pattern, render in CORRELATION_RATIONALE_TEMPLATES:
+        match = pattern.match(text)
+        if match:
+            return render(match)
+    # Unknown shape: substitute the terms we do know and leave the rest. The
+    # label already carries the meaning, so a partial rewrite is safer than
+    # printing raw detector vocabulary.
+    out = text
+    for token, phrase in CORRELATION_TERMS.items():
+        out = out.replace(token, phrase)
+    out = re.sub(r"(\d+)ms", lambda m: _SECONDS(m[1]), out)
+    return out if out != text else label
+
+
+_WINDOW_RE = re.compile(r"w_(\d+)_(\d+)")
+CORRELATION_MOMENT_CLIP_MS = 20_000
+MAX_CORRELATION_MOMENTS = 4
+
+
+# Correlation factors by the stream their primary signal lives on, used when a
+# pattern's refs do not say. A factor naming a phone, a person or speech is the
+# webcam; one naming blur, focus, a tab or a paste is the screen recording.
+CORRELATION_FACTOR_STREAM_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("gaze", "phone", "second_person", "speech", "whisper", "camera_absent",
+      "face_absent", "av_mismatch", "interact", "video_overlap"), "video"),
+    (("paste", "blur", "fullscreen", "typing", "external_resource",
+      "second_monitor", "idle", "submission"), "screen"),
+)
+
+
+def _correlation_stream(factor_id: str, evidence_refs: list[str]) -> str | None:
+    """The recording that holds this pattern's evidence.
+
+    With both a camera and a screen recording in the index, the clip resolver
+    took whichever chunk it reached first, so a second-person or phone finding
+    was handed a screen capture — and one pattern could resolve half its
+    moments to camera and half to screen.
+
+    The refs are real provenance and are trusted first: perception
+    observations are the camera, screen and machine-fact refs the screen
+    recording. The factor name is only a fallback for refs that say neither.
+    """
+
+    refs = [str(r) for r in evidence_refs]
+    if any(r.startswith("perception:") for r in refs):
+        return "video"
+    if any(r.startswith(("screen:", "fact:")) for r in refs):
+        return "screen"
+    for needles, stream in CORRELATION_FACTOR_STREAM_HINTS:
+        if any(n in factor_id for n in needles):
+            return stream
+    return None
+
+
+def _correlation_moments(
+    evidence_refs: list[str],
+    time_range: tuple[int, int],
+    media_index: list,
+    prefer_evidence_type: str | None = None,
+) -> list[CorrelatedPatternMoment]:
+    """One clip per distinct moment the pattern is built from.
+
+    Perception refs carry their window bounds in the id itself
+    (``perception:w=w_1919983_1979983+w_1979983_2039986``), so the moments are
+    recoverable without going back to the perception bundle.
+    """
+
+    windows = sorted({
+        (int(a), int(b))
+        for ref in evidence_refs
+        for a, b in _WINDOW_RE.findall(str(ref))
+    })
+    if not windows:
+        windows = [ (int(time_range[0]), int(time_range[1])) ]
+
+    # Adjacent perception windows are one continuous moment, not two.
+    merged: list[list[int]] = []
+    for start, end in windows:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    moments: list[CorrelatedPatternMoment] = []
+    for start, end in merged[:MAX_CORRELATION_MOMENTS]:
+        span = min(max(end - start, 1), CORRELATION_MOMENT_CLIP_MS)
+        moments.append(
+            CorrelatedPatternMoment(
+                label=f"{_fmt_clock(start)}–{_fmt_clock(end)}",
+                time_range_ms=(start, end),
+                clip_ref=resolve_offset_clip_ref(
+                    event_ms=start,
+                    duration_ms=span,
+                    media_index=media_index,
+                    single_segment=True,
+                    prefer_evidence_type=prefer_evidence_type,  # type: ignore[arg-type]
+                ),
+            )
+        )
+    return moments
+
+
+def _fmt_clock(ms: int) -> str:
+    total = max(0, int(ms)) // 1000
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _correlation_machine_facts(
+    evidence_refs: list[str], machine_facts_bundle: Any
+) -> tuple[list[dict], KeystrokeEvidence | None]:
+    """Facts a pattern cites by id, plus any paste text among them."""
+
+    wanted = {
+        str(ref).split(":", 1)[1]
+        for ref in evidence_refs
+        if str(ref).startswith("fact:")
+    }
+    if not wanted:
+        return [], None
+    rows: list[dict] = []
+    excerpt: KeystrokeEvidence | None = None
+    for fact in getattr(machine_facts_bundle, "facts", []) or []:
+        if str(attr(fact, "id", default="")) not in wanted:
+            continue
+        detail = attr(fact, "detail", default={}) or {}
+        rows.append({
+            "kind": fact_kind(fact),
+            "startOffsetMs": attr(fact, "start_offset_ms", "startOffsetMs", default=0),
+        })
+        pasted = detail.get("pastedExcerpt") if isinstance(detail, Mapping) else None
+        if pasted and excerpt is None:
+            excerpt = KeystrokeEvidence(
+                pasted_excerpt=str(pasted),
+                inserted_char_count=detail.get("charsAdded"),
+                final_value_length=detail.get("totalChars"),
+            )
+    return rows, excerpt
+
+
+def _build_correlated_pattern(
+    contribution: Any,
+    *,
+    media_index: list,
+    perception_bundle: Any,
+    machine_facts_bundle: Any,
+) -> CorrelatedPatternEntry:
+    """One correlated pattern, with the evidence a reviewer needs to judge it.
+
+    Until now these carried a factor id, a score and a detector note and
+    nothing a reviewer could open — no clip, no audio, no pasted text. A
+    correlation is often the strongest thing in the bundle precisely because
+    it spans two modalities, so it was the finding hardest to check.
+    """
+
+    c = contribution
+    label = str(attr(c, "label", default=attr(c, "factor_id", "factorId", default="")))
+    rationale = str(attr(c, "rationale", default="") or "")
+    time_range = tuple(attr(c, "time_range_ms", "timeRangeMs", default=(0, 0)))
+    refs = list(attr(c, "evidence_refs", "evidenceRefs", default=[]) or [])
+
+    moments = _correlation_moments(
+        refs,
+        time_range,  # type: ignore[arg-type]
+        media_index,
+        prefer_evidence_type=_correlation_stream(
+            str(attr(c, "factor_id", "factorId", default="")), refs
+        ),
+    )
+    facts, paste_evidence = _correlation_machine_facts(refs, machine_facts_bundle)
+    audio_summary, phrases, language = _speech_in_window(perception_bundle, time_range)  # type: ignore[arg-type]
+    window_ids = sorted({
+        f"w_{a}_{b}" for ref in refs for a, b in _WINDOW_RE.findall(str(ref))
+    })
+    primary = next((m.clip_ref for m in moments if m.clip_ref), None)
+
+    return CorrelatedPatternEntry(
+        factor_id=str(attr(c, "factor_id", "factorId", default="")),
+        label=label,
+        tier=int(attr(c, "tier", default=2) or 2),
+        score_contribution=float(
+            attr(c, "score_contribution", "scoreContribution", default=0) or 0
+        ),
+        requires_corroboration=bool(
+            attr(c, "requires_corroboration", "requiresCorroboration", default=False)
+        ),
+        rationale=rationale,
+        explanation=humanize_correlation_rationale(rationale, label),
+        time_range_ms=time_range,  # type: ignore[arg-type]
+        evidence_refs=refs,
+        events=[
+            CorrelatedPatternEvent(ref=str(ref), kind="evidence", t_ms=None, label=str(ref))
+            for ref in refs[:5]
+        ],
+        audio_summary=audio_summary,
+        notable_phrases=phrases,
+        speech_language=language,
+        keystroke_evidence=paste_evidence,
+        proof=CorrelatedPatternProof(
+            time_range_ms=time_range,  # type: ignore[arg-type]
+            video_seek_ms=moments[0].time_range_ms[0] if moments else None,
+            clip_ref=primary,
+            moments=moments,
+            machine_facts=facts,
+            perception_window_ids=window_ids,
+            # No clip resolved anywhere: the pattern rests on telemetry alone,
+            # which the UI has to say rather than offering a dead play button.
+            telemetry_only=primary is None,
+        ),
+        question_number=attr(c, "question_number", "questionNumber"),
+        section_title=attr(c, "section_title", "sectionTitle"),
+    )
+
+
+def _build_correlated_patterns(
+    correlated_signals: Any | None,
+    *,
+    media_index: list | None = None,
+    perception_bundle: Any = None,
+    machine_facts_bundle: Any = None,
+) -> CorrelatedPatternsSection:
     contributions = attr(correlated_signals, "contributions", default=[]) or []
     return CorrelatedPatternsSection(
         patterns=[
-            CorrelatedPatternEntry(
-                factor_id=str(attr(c, "factor_id", "factorId", default="")),
-                label=str(attr(c, "label", default=attr(c, "factor_id", "factorId", default=""))),
-                tier=int(attr(c, "tier", default=2) or 2),
-                score_contribution=float(
-                    attr(c, "score_contribution", "scoreContribution", default=0) or 0
-                ),
-                requires_corroboration=bool(
-                    attr(c, "requires_corroboration", "requiresCorroboration", default=False)
-                ),
-                rationale=str(attr(c, "rationale", default="") or ""),
-                time_range_ms=tuple(attr(c, "time_range_ms", "timeRangeMs", default=(0, 0))),  # type: ignore[arg-type]
-                evidence_refs=list(attr(c, "evidence_refs", "evidenceRefs", default=[]) or []),
-                events=[
-                    CorrelatedPatternEvent(ref=str(ref), kind="evidence", t_ms=None, label=str(ref))
-                    for ref in (attr(c, "evidence_refs", "evidenceRefs", default=[]) or [])[:5]
-                ],
+            _build_correlated_pattern(
+                c,
+                media_index=media_index or [],
+                perception_bundle=perception_bundle,
+                machine_facts_bundle=machine_facts_bundle,
             )
             for c in contributions
         ],
@@ -559,7 +948,12 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         unknown_panel=unknown_panel,
         sections=sections,
     )
-    correlated_patterns = _build_correlated_patterns(input_data.correlated_signals)
+    correlated_patterns = _build_correlated_patterns(
+        input_data.correlated_signals,
+        media_index=media_index,
+        perception_bundle=input_data.perception_bundle,
+        machine_facts_bundle=input_data.machine_facts_bundle,
+    )
     return EvidenceBundle(
         candidate_id=input_data.candidate_id,
         assessment_id=input_data.assessment_id,

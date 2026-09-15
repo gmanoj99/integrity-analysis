@@ -153,7 +153,12 @@ def refine_paste_origins(facts: list[MachineFact]) -> None:
             detail["pasteOrigin"] = "internal"
             detail["pasteOriginReason"] = "preceding_copy"
         elif detail.get("pasteOrigin") != "internal":
-            detail["pasteOrigin"] = "external"
+            # Not matched to anything inside the session is not the same as
+            # having come from outside it. The corpus only holds what the
+            # recorder captured, so a candidate reusing her own code from a
+            # place we did not capture lands here too. "unknown" keeps the
+            # paste reportable while leaving the accusation unmade.
+            detail["pasteOrigin"] = "unknown"
 
 
 def mark_paste_delete_pairs(facts: list[MachineFact]) -> None:

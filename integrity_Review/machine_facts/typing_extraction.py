@@ -591,10 +591,16 @@ def extract_rrweb_typing_facts(
 
     for element_id, state in element_state.items():
         duration_ms = state.last_timestamp - state.first_timestamp
+        # A zero-duration burst is text that arrived all at once. Reporting
+        # 0.0 chars/second for it inverted the signal: the fastest possible
+        # input scored lowest and could never cross a rate threshold, so a
+        # single instantaneous blob was the one thing rapid-typing detection
+        # could not see. It has no measurable rate, so report none and let the
+        # consumer decide — a paste is the paste detector's job, not this one's.
         avg_cps = (
             round((state.total_inserted_chars / duration_ms) * 1000, 1)
             if duration_ms > 0
-            else 0.0
+            else None
         )
         facts.append(
             MachineFact(

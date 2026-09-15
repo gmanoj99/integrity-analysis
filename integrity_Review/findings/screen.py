@@ -83,6 +83,45 @@ def _fact_from_obs(
     )
 
 
+# How far either side of a paste an external source still counts as its
+# origin. A tab switched to, a doc opened or an assistant window seen a minute
+# before the paste is plausibly where the text came from; nothing visible at
+# all is not evidence of anything.
+EXTERNAL_SOURCE_PAD_MS = 60_000
+
+# Foreground apps that are not the exam. Only meaningful when the exam UI is
+# not the thing on screen — the exam's own coding IDE is an exam_ide.
+NON_EXAM_FOREGROUND = frozenset({"browser", "notes", "ai_chat", "messaging"})
+
+
+def _external_source_near(
+    observations: list[ScreenObservation], start_ms: int, end_ms: int
+) -> bool:
+    """Whether anything on screen near this window could be an outside source.
+
+    A paste cue on its own says text arrived, not where it came from. The
+    candidate copying her own code inside the exam IDE looks identical to a
+    paste from a website, and calling both "external" turns ordinary work into
+    a cheating accusation. So the external claim has to be earned by something
+    visible: a non-exam site or app, an AI assistant, or a second workspace.
+    """
+
+    lo = start_ms - EXTERNAL_SOURCE_PAD_MS
+    hi = end_ms + EXTERNAL_SOURCE_PAD_MS
+    for obs in observations:
+        if obs.end_ms < lo or obs.start_ms > hi:
+            continue
+        if obs.external_resource_labels:
+            return True
+        if obs.ai_assistant_ui_visible == "yes":
+            return True
+        if obs.secondary_workspace_visible == "yes":
+            return True
+        if obs.exam_ui_visible == "no" and obs.foreground_app_class in NON_EXAM_FOREGROUND:
+            return True
+    return False
+
+
 def derive_screen_findings(
     bundle: ScreenPerceptionBundle,
 ) -> tuple[EvidenceFindingsResult, list[MachineFact]]:
@@ -130,19 +169,38 @@ def derive_screen_findings(
             peak = max(members, key=lambda obs: obs.confidence)
             excerpt = peak.pasted_text_excerpt
             qn = _parse_question_number(peak.visible_question_ref)
+            emit_type, emit_kind = event_type, kind
+            verdict = "flagged"
+            severity = "medium"
+            reasoning = f"Screen episode: {event_type.replace('_', ' ')}."
+            if event_type == "screen_external_paste" and not _external_source_near(
+                observations, start.start_ms, end.end_ms
+            ):
+                # Text arrived, but nothing on screen says where from. The
+                # candidate reusing her own code inside the exam IDE produces
+                # exactly this picture, so it is recorded for the model to
+                # judge — not asserted as an external paste, which is an
+                # accusation the evidence does not support.
+                emit_type, emit_kind = "screen_paste", MachineFactKind.SCREEN_PASTE
+                verdict = "provisional"
+                severity = "low"
+                reasoning = (
+                    "Paste seen on screen with no external source visible around it; "
+                    "origin not established."
+                )
             findings.append(
                 EvidenceFinding(
                     id=f"scr_{index}",
                     source="screen",
-                    event_type=event_type,
+                    event_type=emit_type,
                     timestamp_window_ms=(start.start_ms, end.end_ms),
                     attribution="candidate",
-                    severity="medium",
+                    severity=severity,
                     evidence_ref=f"screen:{start.chunk_id}",
-                    verdict="flagged",
-                    evidence_strength="moderate",
+                    verdict=verdict,
+                    evidence_strength="moderate" if verdict == "flagged" else "thin",
                     occurrence_count=len(members),
-                    reasoning=f"Screen episode: {event_type.replace('_', ' ')}.",
+                    reasoning=reasoning,
                     screen_proof=_screen_proof(
                         peak,
                         pasted_excerpt=excerpt,
@@ -151,7 +209,7 @@ def derive_screen_findings(
                     keystroke_proof=None,
                 )
             )
-            synthetic_facts.append(_fact_from_obs(kind, peak, detail_fn(peak)))
+            synthetic_facts.append(_fact_from_obs(emit_kind, peak, detail_fn(peak)))
             index += 1
 
     parts: list[str] = []

@@ -1,6 +1,6 @@
 """Deliberation prompt text (Scope 4)."""
 
-DELIBERATION_PROMPT_VERSION = "scope4-v16"
+DELIBERATION_PROMPT_VERSION = "scope4-v17"
 
 # The perception block is no longer capped: truncating it to 80 rows hid the
 # back half of every long session from the model. Only the machine-fact detail
@@ -36,7 +36,7 @@ For every emitting episode, emit exactly ONE catalogue signal with episodeRef se
 6. In exam_hall/shared_space settings, require interaction evidence; background persons alone are not evidence.
 7. Do not attribute a phone to the candidate when another person is present unless ownership or interaction is clear.
 8. Address citable evidence-strength and attribution priors when present.
-9. The catalogue's DEFINITIVE / COMBINABLE labels calibrate `confidence`, they do not gate emission. DEFINITIVE evidence alone (hands.objectInHand=phone; integrity-related audio.speechContentClass; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE) warrants high confidence. A single COMBINABLE observation may still be emitted at correspondingly lower confidence with `resolution: ambiguous`.
+9. The catalogue's DEFINITIVE / COMBINABLE labels calibrate `confidence`, they do not gate emission. DEFINITIVE evidence alone (hands.objectInHand=phone; integrity-related audio.speechContentClass; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE) warrants high confidence. SCREEN_PASTE is not in that list: it records that a paste happened, not that it came from outside. A single COMBINABLE observation may still be emitted at correspondingly lower confidence with `resolution: ambiguous`.
 
 === SIGNAL CATALOGUE ===
 
@@ -57,13 +57,21 @@ possible_remote_dictation
   Require speech/lip mismatch with conversationSummaryEn plus headphones, phone, nearby paste/typing, or an AV-mismatch factor.
 
 unauthorized_reference_usage
-  DEFINITIVE: SCREEN_EXTERNAL_RESOURCE or SCREEN_EXTERNAL_PASTE with OCR confirmation; or moved-out-of-window plus retrieval of new material.
+  DEFINITIVE: SCREEN_EXTERNAL_RESOURCE, or SCREEN_EXTERNAL_PASTE with OCR confirmation; or moved-out-of-window plus retrieval of new material. A bare SCREEN_PASTE does not qualify — its source is unknown.
   COMBINABLE: candidate-owned phone; sustained off-screen gaze; blur/tab switch; paste after blur; baseline anomalies.
 
 abnormal_paste_workflow
-  DEFINITIVE: SCREEN_EXTERNAL_PASTE with OCR; or deterministic_paste_workflow factor.
-  COMBINABLE: reportable external paste plus correction, focus, gaze, phone, or baseline corroboration.
-  Internal/reverted/starter-code pastes are not evidence.
+  A paste is only a concern when the text came from OUTSIDE the exam. Reusing your own
+  code — copying between questions, from a scratch area, from an earlier attempt at the
+  same problem — is ordinary work and must never be reported as cheating.
+  DEFINITIVE: SCREEN_EXTERNAL_PASTE (a paste with a non-exam site, app, AI assistant or
+  second workspace visible around it); or deterministic_paste_workflow factor.
+  COMBINABLE: external_paste (a paste right after the candidate left the exam window)
+  plus correction, focus, gaze, phone or baseline corroboration.
+  NOT evidence on their own: SCREEN_PASTE and `paste` / `paste_burst` — these mean text
+  arrived with no sign of where from, which is exactly what reusing one's own code looks
+  like. Internal, reverted and starter-code pastes are likewise not evidence.
+  Clearing an uncorroborated paste is the correct call, not a missed detection.
 
 suspicious_focus_pattern
   Off-screen gaze can stand alone — no device, second person, or machine fact is required.

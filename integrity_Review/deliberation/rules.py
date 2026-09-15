@@ -463,14 +463,39 @@ def validate_conjunction_rule(
     return True
 
 
+# How far from a signal's own window a machine fact still counts as evidence
+# for it. Mirrors FACT_WINDOW_PAD_MS in the bundle's section builders, which
+# already uses this tolerance to decide which facts belong to which card.
+FACT_CITATION_PAD_MS = 15_000
+
+
 def validate_no_fact_invention(
     signal: RawCandidateSignal,
     machine_fact_kinds_present: set[str],
     window_ids_present: set[str],
     baseline_metric_names_present: set[str],
+    fact_windows_by_kind: dict[str, list[tuple[int, int]]] | None = None,
+    signal_window_ms: tuple[int, int] | None = None,
 ) -> bool:
     for kind in signal.machine_facts_cited:
         if kind not in machine_fact_kinds_present:
+            return False
+        # Presence of the kind anywhere in the session is not evidence that it
+        # happened *here*. One real SCREEN_EXTERNAL_PASTE at 54:05 was letting
+        # the model assert pastes at 27:00 and 39:00 too, with full confidence
+        # and nothing to contradict it, because only the vocabulary was
+        # checked. A cited kind must have an instance near the signal.
+        if fact_windows_by_kind is None or signal_window_ms is None:
+            continue
+        spans = fact_windows_by_kind.get(kind)
+        if not spans:
+            continue
+        start, end = signal_window_ms
+        if not any(
+            span_start - FACT_CITATION_PAD_MS <= end
+            and span_end + FACT_CITATION_PAD_MS >= start
+            for span_start, span_end in spans
+        ):
             return False
     for ref in signal.observations_cited:
         window_id = ref.split(".")[0]

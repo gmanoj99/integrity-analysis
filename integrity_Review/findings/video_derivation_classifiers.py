@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from math import log10
 
 from ..contracts.perception import PerceptionBundle, PerceptionObservation
@@ -331,7 +333,7 @@ def classify_gaze(live: list[PerceptionObservation], bundle: PerceptionBundle) -
     by_dir: dict[str, list[Episode]] = {}
     for ep in episodes:
         dirs = [o.attention.gaze_direction for o in ep.observations]
-        dominant = max(set(dirs), key=dirs.count)
+        dominant = _dominant(dirs, "UNKNOWN")
         by_dir.setdefault(dominant, []).append(ep)
     model_recurring = any(
         o.attention.repeated_gaze_pattern not in {"none", "UNKNOWN"} for o in live
@@ -485,6 +487,28 @@ def classify_audio_wearables(live: list[PerceptionObservation], bundle: Percepti
     return {"findings": findings, "cleared": cleared}
 
 
+def _dominant(values: list[str], default: str) -> str:
+    """The most frequent value, ties broken by what was seen first.
+
+    This used to be ``max(set(values), key=values.count)``. ``max`` over a set
+    resolves ties by iteration order, and set iteration order for strings
+    depends on the process hash seed — so on a tie the same recording produced
+    a different answer on each run. For speech that decided whether a passage
+    was ``discussing_solution`` (a finding) or ``self_talk`` (benign context),
+    which then changed the episode inventory and the correlation set, so two
+    identical reviews of one candidate could disagree.
+
+    Falling back to first occurrence keeps the result stable and ties it to
+    the order the evidence actually appeared in, rather than to a hash.
+    """
+
+    if not values:
+        return default
+    counts = Counter(values)
+    best = max(counts.values())
+    return next(value for value in values if counts[value] == best)
+
+
 def _build_speech_proof(ep: Episode) -> SpeechProof | None:
     summaries = []
     seen = set()
@@ -500,9 +524,9 @@ def _build_speech_proof(ep: Episode) -> SpeechProof | None:
     if len(joined) > max_chars:
         joined = joined[: max_chars - 1] + "…"
     langs = [o.audio.speech_language for o in ep.observations if o.audio.speech_language != "UNKNOWN"]
-    lang = max(set(langs), key=langs.count) if langs else "UNKNOWN"
+    lang = _dominant(langs, "UNKNOWN")
     classes = [o.audio.speech_content_class for o in ep.observations if o.audio.speech_content_class not in {"UNKNOWN", "silence"}]
-    content_class = max(set(classes), key=classes.count) if classes else "unclear"
+    content_class = _dominant(classes, "unclear")
     return SpeechProof(
         conversation_summary_en=joined,
         speech_language=lang,

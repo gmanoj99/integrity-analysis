@@ -8,7 +8,68 @@ from typing import Any, Literal
 from ..contracts.evidence_bundle import ClipRef, ClipSegment, MediaIndexEntry
 from ..duck_helpers import attr
 
-EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v28"
+EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v29"
+
+
+# Which recording holds the evidence for each finding. A finding about the
+# person or the room is on the webcam; one about what was displayed is on the
+# screen recording. This is the same split the reviewer UI groups its
+# categories by, and the two have to agree — a card filed under "Attention
+# Away from Screen" that plays a screen capture is worse than no clip.
+EVENT_TYPE_EVIDENCE_STREAM: dict[str, Literal["video", "screen"]] = {
+    # The person or the room — webcam
+    "possible_audio_coaching": "video",
+    "possible_second_person_involvement": "video",
+    "possible_external_consultation": "video",
+    "possible_remote_dictation": "video",
+    "audio_wearable_assisted_comms": "video",
+    "phone_usage": "video",
+    "reading_notes": "video",
+    "external_help": "video",
+    "discussing_solution_audio": "video",
+    "whisper_or_dictation": "video",
+    "off_camera_voice_coaching": "video",
+    "device_call_during_attempt": "video",
+    "av_speech_without_lips": "video",
+    "call_ringtone": "video",
+    "suspicious_eye_movement": "video",
+    "suspicious_focus_pattern": "video",
+    "brief_look_away": "video",
+    "left_examination_area": "video",
+    "left_seat_body_present": "video",
+    "no_candidate": "video",
+    "prolonged_absence": "video",
+    "multiple_faces": "video",
+    "background_person_passing_by": "video",
+    "brief_seat_movement": "video",
+    # What was on the display — screen recording
+    "fullscreen_exam_lost": "screen",
+    "external_resource_open": "screen",
+    "ai_assistant_ui_visible": "screen",
+    "unauthorized_reference_usage": "screen",
+    "secondary_workspace_visible": "screen",
+    "external_paste": "screen",
+    "mass_paste": "screen",
+    "screen_external_paste": "screen",
+    "answer_appeared": "screen",
+    "abnormal_paste_workflow": "screen",
+    "rapid_typing": "screen",
+    "typing_restart": "screen",
+    "bulk_delete": "screen",
+    "abnormal_correction_pattern": "screen",
+    "typing_cadence_mismatch": "screen",
+}
+
+
+def evidence_stream_for_event(event_type: str) -> Literal["video", "screen"] | None:
+    """The recording a finding of this type is evidenced on, if known.
+
+    Returns None for an unmapped type rather than guessing: the resolver then
+    behaves exactly as it did before, which is the safe direction for a
+    vocabulary that grows.
+    """
+
+    return EVENT_TYPE_EVIDENCE_STREAM.get(event_type)
 
 
 def _artifact_type_to_evidence(artifact_type: str) -> tuple[Literal["video", "screen"], ...]:
@@ -60,12 +121,20 @@ def resolve_offset_clip_ref(
     duration_ms: int,
     media_index: list[MediaIndexEntry],
     single_segment: bool = False,
+    prefer_evidence_type: Literal["video", "screen"] | None = None,
 ) -> ClipRef | None:
     """Playback window for ``event_ms`` + ``duration_ms``, as chunk segments.
 
     ``single_segment`` keeps only the chunk the event starts in and clamps the
     window to that chunk's end, so a reviewer gets one clip positioned on the
     evidence instead of a reel of consecutive chunks to scrub through.
+
+    ``prefer_evidence_type`` says which recording actually holds the evidence.
+    Without it, a single-segment clip took whichever stream ``build_media_index``
+    happened to emit first at that instant — the screen artifact, at nearly
+    every point in time — so "candidate received dictated answers" played a
+    screen capture with no candidate in it. The preference is a preference, not
+    a filter: a session recorded on one stream only still gets its clip.
     """
 
     if not media_index:
@@ -95,13 +164,17 @@ def resolve_offset_clip_ref(
         # remained after the event turned an anchor in a chunk's final moments
         # into a clip of a few milliseconds; sliding keeps the moment on screen
         # and still hands the reviewer one real clip.
+        # The stream the evidence is on, when the caller knows it.
+        candidates = [
+            e for e in covered if e.evidence_type == prefer_evidence_type
+        ] or covered
         best = next(
             (
                 e
-                for e in covered
+                for e in candidates
                 if e.session_start_ms <= event_ms < e.session_start_ms + e.duration_ms
             ),
-            covered[0],
+            candidates[0],
         )
         want = min(max(duration_ms, 1), best.duration_ms)
         local_start = min(
