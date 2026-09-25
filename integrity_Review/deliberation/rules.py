@@ -14,6 +14,7 @@ from ..contracts.deliberation import (
     ValidatedSignal,
 )
 from ..duck_helpers import attr, mapping_view
+from ..lib.plain_text import plain_text
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
 from ..prompts.shared import DELIBERATION_MODEL_VERSION
 
@@ -600,10 +601,11 @@ def _normalize_proof_anchors(value: Any) -> dict[str, Any]:
 def parse_integrity_story(raw: dict[str, Any] | None) -> IntegrityStory | None:
     if not isinstance(raw, dict):
         return None
-    headline = str(raw.get("headline", "")).strip()
-    what = str(raw.get("whatHappened", raw.get("what_happened", ""))).strip()
-    why = str(raw.get("whyItMatters", raw.get("why_it_matters", ""))).strip()
-    honest = str(raw.get("honestAlternative", raw.get("honest_alternative", ""))).strip()
+    # Reviewer-facing prose: internal codes the model copied from the prompt become plain words.
+    headline = plain_text(str(raw.get("headline", "")).strip())
+    what = plain_text(str(raw.get("whatHappened", raw.get("what_happened", ""))).strip())
+    why = plain_text(str(raw.get("whyItMatters", raw.get("why_it_matters", ""))).strip())
+    honest = plain_text(str(raw.get("honestAlternative", raw.get("honest_alternative", ""))).strip())
     if not headline or not what:
         return None
     combined = f"{headline}\n{what}\n{why}"

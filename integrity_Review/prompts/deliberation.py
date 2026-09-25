@@ -1,4 +1,4 @@
-DELIBERATION_PROMPT_VERSION = "scope4-v19"
+DELIBERATION_PROMPT_VERSION = "scope4-v22"
 
 TRACK2_CAPS = {
     "machine_fact_detail_rows": 20,
@@ -60,7 +60,7 @@ abnormal_paste_workflow
   code — copying between questions, from a scratch area, from an earlier attempt at the
   same problem — is ordinary work and must never be reported as cheating.
   DEFINITIVE: SCREEN_EXTERNAL_PASTE (a paste with a non-exam site, app, AI assistant or
-  second workspace visible around it); or deterministic_paste_workflow factor.
+  second workspace visible around it).
   COMBINABLE: external_paste (a paste right after the candidate left the exam window)
   plus correction, focus, gaze, phone or baseline corroboration.
   NOT evidence on their own: SCREEN_PASTE and `paste` / `paste_burst` — these mean text
@@ -115,6 +115,7 @@ Rules:
 === INTEGRITY STORY ===
 Every emitting signal needs integrityStory: headline, whatHappened, whyItMatters, honestAlternative, severity, involvedQuestions, and proofAnchors.
 Write like a human examiner and do not echo detector templates.
+headline, whatHappened, whyItMatters and honestAlternative are read by non-technical reviewers: never write event codes (TYPING_STARTED, MCQ_ANSWER_SELECTED, LARGE_PASTE), finding names (suspicious_eye_movement), window ids or milliseconds. Say it in words: "the candidate looked away, then started typing 9 seconds later".
 
 === SUMMARY FOR THE REVIEWER ===
 `behaviorSummary` is the first thing on the reviewer's screen and is usually the only part read in full.
@@ -127,7 +128,7 @@ Content — 4 to 6 sentences, roughly 90 to 140 words:
   Group repeats rather than listing each ("held a phone on four occasions between 49 and 57 minutes").
   Name the section from the SECTION MAP for each moment ("In the MCQ section, ...").
   Name a question number ONLY if one is supplied to you. Never guess one, and say nothing about questions if none is given.
-  Close with what this means for the reviewer's decision.
+  Close with what this means for the review, without telling the reviewer what to decide.
 
 When nothing was substantiated, say so in ONE plain sentence and stop — no padding, no caveats about the analysis.
   Example: "No malpractice was found. The candidate completed the exam on their own, with no phone, no other person and no outside help seen or heard at any point."
@@ -157,6 +158,7 @@ Valid JSON only:
     "holisticTrustScore": 100
   }
 }
+`recommendation` is ONE short sentence (at most 20 words) on the reviewer's next step, based on the whole report — e.g. "Review the moments at 0:13 and 4:13 before deciding." Never tell the reviewer to reject, fail, disqualify, cancel or pass the candidate; that decision is theirs.
 `category` and `confidence` are yours — your `recommendation` and `reasoning` are shown to the reviewer as written. Two checks apply afterwards and will downgrade you, so state a verdict the citations carry:
   STRONG_EVIDENCE needs at least one signal you resolved as `assisted`, and evidence in more than one window or more than one modality — three citations of a single moment are one source, not three.
   CLEAR needs no surviving signal left unresolved as honest; if something concerns you, say REVIEW_REQUIRED."""

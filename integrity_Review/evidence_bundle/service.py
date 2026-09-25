@@ -24,6 +24,7 @@ from ..contracts.evidence_bundle import (
     ReviewerActionSection,
     TrackBObservationCard,
 )
+from ..lib.plain_text import plain_text, seconds, term
 from ..duck_helpers import attr, fact_kind
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
 from .clips import (
@@ -108,6 +109,8 @@ def _speech_in_window(
         summary = attr(audio, "conversation_summary_en", "conversationSummaryEn")
         if not (isinstance(summary, str) and summary.strip()):
             continue
+        if attr(audio, "speech_present", "speechPresent") != "yes":
+            continue
         speech_class = attr(audio, "speech_content_class", "speechContentClass")
         rank = 1 if speech_class in _INTEGRITY_SPEECH else 0
         if best is None or rank > best[0]:
@@ -121,6 +124,37 @@ def _speech_in_window(
         [str(p) for p in phrases if str(p).strip()],
         attr(audio, "speech_language", "speechLanguage"),
     )
+
+
+AUDIO_SIGNAL_TYPES = frozenset({"possible_audio_coaching", "possible_remote_dictation"})
+MAX_SPEECH_MOMENTS = 3
+
+
+def _heard_in_window(perception_bundle: Any, window: tuple[int, int]) -> str | None:
+    """What was said in the window: exam-relevant speech first, then time order."""
+
+    moments: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for observation in attr(perception_bundle, "observations", default=[]) or []:
+        start = int(attr(observation, "start_ms", "startMs", default=0) or 0)
+        end = int(attr(observation, "end_ms", "endMs", default=start) or start)
+        audio = attr(observation, "audio")
+        text = str(attr(audio, "conversation_summary_en", "conversationSummaryEn") or "").strip()
+        if (
+            not text or text in seen
+            or attr(audio, "speech_present", "speechPresent") != "yes"
+            or not _overlaps((start, max(end, start + 1)), window)
+        ):
+            continue
+        seen.add(text)
+        relevant = attr(audio, "speech_content_class", "speechContentClass") in _INTEGRITY_SPEECH
+        moments.append((0 if relevant else 1, start, text))
+    if not moments:
+        return None
+    picked = sorted(sorted(moments)[:MAX_SPEECH_MOMENTS], key=lambda m: m[1])
+    return plain_text(" ".join(
+        f"At {start // 60_000}:{start // 1000 % 60:02d}, {text[0].lower() + text[1:]}" for _, start, text in picked
+    ))
 
 
 INSTANTANEOUS_EVENT_TYPES = frozenset({
@@ -264,6 +298,10 @@ def build_curated_track_b_observations(
         found = attached((t0, t1))
         summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
         quotes = list(story.proof.audio_quotes) if story else []
+        audio_related = str(signal.signal_type) in AUDIO_SIGNAL_TYPES or any(
+            str(s) == "audio_observation" for s in signal.source_types
+        )
+        heard = _heard_in_window(perception_bundle, (t0, t1)) if audio_related else None
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{signal.signal_id}",
@@ -282,7 +320,7 @@ def build_curated_track_b_observations(
                 confidence=signal.confidence,
                 resolution=str(signal.resolution),
                 severity=story.severity if story else None,
-                what_happened=story.what_happened if story else None,
+                what_happened=heard or (story.what_happened if story else None),
                 why_it_matters=story.why_it_matters if story else None,
                 honest_alternative=story.honest_alternative if story else None,
                 audio_summary=summary,
@@ -548,28 +586,8 @@ def _build_detected_signals(
     )
 
 
-CORRELATION_TERMS: dict[str, str] = {
-    "suspicious_eye_movement": "the candidate looked away from the screen",
-    "external_help": "another person was interacting with the candidate",
-    "phone_usage": "a phone was visible",
-    "no_candidate": "the candidate was not in frame",
-    "external_resource_open": "a non-exam app or site was open on screen",
-    "secondary_workspace_visible": "a second screen was in use",
-    "external_paste": "text was pasted in from outside the exam",
-    "mass_paste": "several large blocks of text were pasted in",
-    "MCQ_ANSWER_SELECTED": "an answer was selected",
-    "discussing_solution": "discussing the solution",
-    "receiving_dictation": "receiving dictation",
-    "reciting_answer_choices": "reciting the answer choices",
-    "asking_for_answer": "asking for an answer",
-    "technical_exam_help": "asking for technical help",
-}
-
-_SECONDS = lambda ms: f"{round(int(ms) / 1000)} second{'' if round(int(ms) / 1000) == 1 else 's'}"
-
-
-def _term(token: str) -> str:
-    return CORRELATION_TERMS.get(token, token.replace("_", " "))
+_SECONDS = seconds
+_term = term
 
 
 CORRELATION_RATIONALE_TEMPLATES: tuple[tuple[re.Pattern[str], Any], ...] = (
@@ -594,6 +612,27 @@ CORRELATION_RATIONALE_TEMPLATES: tuple[tuple[re.Pattern[str], Any], ...] = (
                   f"in {_SECONDS(m[2])}.",
     ),
     (
+        re.compile(r"^fullscreen lost → (\w+) (\d+)ms later$"),
+        lambda m: f"The exam left fullscreen, then {_term(m[1])} {_SECONDS(m[2])} later.",
+    ),
+    (
+        re.compile(r"^gaze_off → (\w+) → (\w+) chain\.(.*)$"),
+        lambda m: f"The candidate looked away from the screen, then there was speech, "
+                  f"then {_term(m[2])}.{m[3]}",
+    ),
+    (
+        re.compile(r"^(\w+)(?: of (\d+) chars)? with no in-exam COPY in the preceding (\d+)ms$"),
+        lambda m: f"{_term(m[1]).capitalize()}"
+                  + (f" ({m[2]} characters)" if m[2] else "")
+                  + f" with nothing copied inside the exam in the {_SECONDS(m[3])} before, "
+                  "so it came from outside.",
+    ),
+    (
+        re.compile(r"^(.+?) → external LARGE_PASTE (\d+)ms later(.*)$"),
+        lambda m: f"{_term(m[1]).capitalize()}, then a large block of text was pasted "
+                  f"{_SECONDS(m[2])} later{m[3]}.",
+    ),
+    (
         re.compile(r"^(\w+) overlapping screen/input activity \((\w+)\)$"),
         lambda m: f"{_term(m[1]).capitalize()} while {_term(m[2])}.",
     ),
@@ -607,11 +646,8 @@ def humanize_correlation_rationale(rationale: str, label: str) -> str | None:
     for pattern, render in CORRELATION_RATIONALE_TEMPLATES:
         match = pattern.match(text)
         if match:
-            return render(match)
-    out = text
-    for token, phrase in CORRELATION_TERMS.items():
-        out = out.replace(token, phrase)
-    out = re.sub(r"(\d+)ms", lambda m: _SECONDS(m[1]), out)
+            return plain_text(render(match))
+    out = plain_text(text)
     return out if out != text else label
 
 

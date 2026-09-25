@@ -132,8 +132,13 @@ def classify_url(url: str) -> ChunkUrl:
     media_type: str | None = None
     if lowered.endswith("__metadata.json.gz"):
         role, stem = "metadata", filename[: -len("__metadata.json.gz")]
-    elif lowered.endswith("__events.json.gz"):
-        role, stem = "events", filename[: -len("__events.json.gz")]
+    elif lowered.endswith(("__events.json.gz", "__events.json")):
+        role, stem = "events", re.sub(r"__events\.json(?:\.gz)?$", "", filename, flags=re.IGNORECASE)
+    elif "/v2/" in path and re.search(r"__\d+\.json$", lowered):
+        # v2 session recordings are screen video wrapped in JSON
+        # ({"file": "data:video/webm;base64,…"}), not rrweb DOM batches.
+        role, stem = "media", filename[: -len(".json")]
+        media_type = "SCREEN_VIDEO"
     elif lowered.endswith(".webm"):
         role, stem = "media", filename[: -len(".webm")]
         media_type = (

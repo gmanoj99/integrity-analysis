@@ -38,6 +38,7 @@ from .episodes import (
     serialize_episode_inventory,
 )
 from ..duck_helpers import attr, fact_kind
+from ..lib.plain_text import plain_text
 from .rules import (
     DELIBERATION_MODEL_VERSION,
     FIELD_PATH_RESOLVERS,
@@ -113,6 +114,12 @@ def _extract_balanced_object(text: str) -> str | None:
             if depth == 0:
                 return text[start : index + 1]
     return None
+
+
+_VERDICT_WORDS = re.compile(
+    r"\b(reject|disqualif|invalidat|cancel|annul|fail(?:ed)? the (?:candidate|exam|assessment))\w*",
+    re.IGNORECASE,
+)
 
 
 def _pick_raw_text(raw: Mapping[str, Any], camel: str, snake: str, default: str = "") -> str:
@@ -918,9 +925,9 @@ def build_deliberation_bundle(
         )
     ]
 
-    behavior_summary = _pick_raw_text(raw, "behaviorSummary", "behavior_summary")
-    recommendation_text = _pick_raw_text(raw, "recommendation", "recommendation")
-    reasoning = _pick_raw_text(raw, "reasoning", "reasoning")
+    behavior_summary = plain_text(_pick_raw_text(raw, "behaviorSummary", "behavior_summary"))
+    recommendation_text = plain_text(_pick_raw_text(raw, "recommendation", "recommendation"))
+    reasoning = plain_text(_pick_raw_text(raw, "reasoning", "reasoning"))
     if category != "CLEAR":
         if _looks_like_clear_prose(behavior_summary):
             behavior_summary = (
@@ -933,6 +940,15 @@ def build_deliberation_bundle(
             recommendation_text = (
                 "Review recommended — an independently derived finding warrants human judgment."
             )
+
+    # The decision is the reviewer's: a recommendation telling them to reject or
+    # disqualify the candidate becomes the plain next step for this category.
+    if _VERDICT_WORDS.search(recommendation_text or ""):
+        recommendation_text = (
+            "No action needed."
+            if str(category) == "CLEAR"
+            else "Review the flagged moments before making a decision."
+        )
 
     recommendation = DeliberationRecommendation(
         behavior_summary=behavior_summary,

@@ -10,7 +10,7 @@ from .contracts import (
     TimelineEvent,
     WEIGHT_TABLE,
 )
-from .detectors import EXCLUDED_DETECTORS, detect_all_factors, detect_paste_after_blur
+from .detectors import detect_all_factors, detect_paste_after_blur
 from .timeline import build_correlation_timeline
 
 __all__ = [
@@ -20,7 +20,6 @@ __all__ = [
     "CorrelatedSignalsBundle",
     "CorrelationConfig",
     "DetectCtx",
-    "EXCLUDED_DETECTORS",
     "RiskContribution",
     "TimelineEvent",
     "WEIGHT_TABLE",
