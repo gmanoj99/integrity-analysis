@@ -62,6 +62,7 @@ class EvidenceBundleInput:
     contextual_events: list[Any] | None = None
     perception_version_hash: str = "unknown"
     baseline_version_hash: str = "unknown"
+    audio_available: bool = True
 
 
 _TITLE_OVERRIDES = {
@@ -959,7 +960,10 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
             prompt_version=DELIBERATION_PROMPT_VERSION,
             evidence_bundle_version=EVIDENCE_BUNDLE_LOGIC_VERSION,
             clip_cache_version="offset-only-v1",
-            model_versions={"deliberationModel": bundle.model_version},
+            model_versions={
+                "deliberationModel": bundle.model_version,
+                "audioCapture": "available" if input_data.audio_available else "none",
+            },
             composite_hash=composite_hash,
         ),
         media_index=media_index,

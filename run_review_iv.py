@@ -547,16 +547,38 @@ def install_media_delivery(
 
     from integrity_Review.perception import chunk_job
 
-    if mode == "auto":
-        chunk_job.resolve_media_parts = STOCK_RESOLVE_MEDIA_PARTS
-        return
-
     def local_path(signed_url: str) -> Path | None:
         name = url_to_filename.get(signed_url)
         if name is None:
             return None
         candidate = cache_dir / name
         return candidate if candidate.is_file() and candidate.stat().st_size else None
+
+    async def probe_audio_locally(
+        signed_url: str, *, client: httpx.AsyncClient | None = None, probe_bytes: int = 65_536
+    ) -> bool | None:
+        """Prefer the cached chunk over the network: after ``--download``,
+        the signed URL may have expired, and the real probe would then
+        default to audio-enabled — quietly reintroducing the audio schema
+        on every local run instead of reusing the cache like every other
+        media path here does.
+        """
+        from integrity_Review.media.perception_media import (
+            probe_webm_audio_track,
+            webm_has_audio_track,
+        )
+
+        cached = local_path(signed_url)
+        if cached is None:
+            return await probe_webm_audio_track(signed_url, client=client, probe_bytes=probe_bytes)
+        decoded = decode_screen_recording(maybe_gunzip(await asyncio.to_thread(cached.read_bytes)))
+        return webm_has_audio_track(decoded) if is_ebml_magic(decoded) else None
+
+    _pipeline.probe_webm_audio_track = probe_audio_locally
+
+    if mode == "auto":
+        chunk_job.resolve_media_parts = STOCK_RESOLVE_MEDIA_PARTS
+        return
 
     async def read_media(signed_url: str) -> bytes:
         cached = local_path(signed_url)

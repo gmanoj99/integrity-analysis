@@ -316,3 +316,4 @@ class PerceptionChunkJobPayload(ContractModel):
     end_offset_ms: int
     section_id: str | None = None
     retry_not_before: int | None = None
+    audio_available: bool = True

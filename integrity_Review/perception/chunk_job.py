@@ -38,12 +38,17 @@ from ..deps import PipelineDeps
 from ..gemini_call import generate_and_log
 from ..media.perception_media import resolve_media_parts
 from ..prompts import (
+    AUDIO_EVENT_ATTR_KEYS,
     PERCEPTION_MAX_OUTPUT_TOKENS,
     PERCEPTION_PROMPT_VERSION,
     PERCEPTION_RESPONSE_SCHEMA,
+    PERCEPTION_RESPONSE_SCHEMA_NO_AUDIO,
     PERCEPTION_SYSTEM_PROMPT,
+    PERCEPTION_SYSTEM_PROMPT_NO_AUDIO,
     SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT,
+    SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT_NO_AUDIO,
     SCREEN_CAMERA_RESPONSE_SCHEMA,
+    SCREEN_CAMERA_RESPONSE_SCHEMA_NO_AUDIO,
     SCREEN_PERCEPTION_SYSTEM_PROMPT,
     build_perception_chunk_user_prompt,
     build_screen_camera_user_prompt,
@@ -85,8 +90,9 @@ def is_sidecar_chunk(chunk_id: str) -> bool:
     return chunk_id.endswith(SIDECAR_SUFFIXES)
 
 
-def perception_chunk_cache_key(chunk_id: str) -> str:
-    return f"{PERCEPTION_PROMPT_VERSION}|chunk:{chunk_id}"
+def perception_chunk_cache_key(chunk_id: str, audio_available: bool = True) -> str:
+    suffix = "" if audio_available else "-no-audio"
+    return f"{PERCEPTION_PROMPT_VERSION}{suffix}|chunk:{chunk_id}"
 
 
 def screen_chunk_cache_key(chunk_id: str) -> str:
@@ -172,9 +178,15 @@ def parse_events_response(
             if end_local <= start_local:
                 continue
             kind = item.get("kind") if item.get("kind") in EVENT_KINDS else "other"
+            if not payload.audio_available and kind == "speech":
+                # Defensive: the no-audio schema already omits this kind, so a
+                # model that still emits it is not describing a real sound.
+                continue
             duration_ms = max(1, round(end_local - start_local))
             event_id = item.get("eventId") if isinstance(item.get("eventId"), str) and item["eventId"] else f"e_{payload.chunk_id}_{index}"
             attrs = dict(item.get("attrs") or {}) if isinstance(item.get("attrs"), dict) else {}
+            if not payload.audio_available:
+                attrs = {k: v for k, v in attrs.items() if k not in AUDIO_EVENT_ATTR_KEYS}
             summary = item.get("summary") if isinstance(item.get("summary"), str) else None
             quality_caveat = (
                 item.get("qualityCaveat") if isinstance(item.get("qualityCaveat"), str) else None
@@ -218,7 +230,11 @@ def parse_events_response(
                 {
                     "facePresentDominant": chunk_baseline_raw.get("facePresentDominant"),
                     "settingType": chunk_baseline_raw.get("settingType"),
-                    "audioNotes": chunk_baseline_raw.get("audioNotes"),
+                    "audioNotes": (
+                        chunk_baseline_raw.get("audioNotes")
+                        if payload.audio_available
+                        else None
+                    ),
                 }
             )
         return PerceptionChunkResult(
@@ -548,7 +564,7 @@ async def analyze_camera_chunk(
         )
         return CachedPerceptionChunk(result=result, observations=[])
 
-    cache_key = perception_chunk_cache_key(payload.chunk_id)
+    cache_key = perception_chunk_cache_key(payload.chunk_id, payload.audio_available)
     cached = await deps.cache.get(cache_key)
     if isinstance(cached, dict):
         if cached.get("result"):
@@ -569,6 +585,7 @@ async def analyze_camera_chunk(
             chunk_start_s=round(payload.start_offset_ms / 1000),
             chunk_duration_s=round(payload.duration_ms / 1000),
             section_type=payload.section_id,
+            audio_available=payload.audio_available,
         )
     )
     clip_label = (
@@ -579,6 +596,7 @@ async def analyze_camera_chunk(
         payload.signed_url,
         "video/webm",
         [user, clip_label],
+        check_audio_track=payload.audio_available,
     )
     deps.logger.info(
         "perception-chunk-job: resolved media parts (camera)",
@@ -591,8 +609,12 @@ async def analyze_camera_chunk(
         "temperature": 0,
         "maxOutputTokens": PERCEPTION_MAX_OUTPUT_TOKENS,
         "responseMimeType": "application/json",
-        "responseSchema": PERCEPTION_RESPONSE_SCHEMA,
-        "systemInstruction": PERCEPTION_SYSTEM_PROMPT,
+        "responseSchema": (
+            PERCEPTION_RESPONSE_SCHEMA if payload.audio_available else PERCEPTION_RESPONSE_SCHEMA_NO_AUDIO
+        ),
+        "systemInstruction": (
+            PERCEPTION_SYSTEM_PROMPT if payload.audio_available else PERCEPTION_SYSTEM_PROMPT_NO_AUDIO
+        ),
     }
     camera_meta = {"chunk_id": payload.chunk_id, "section_id": payload.section_id}
     text = await _gemini_text(
@@ -743,7 +765,7 @@ async def analyze_screen_camera_chunk(
     deps: PipelineDeps,
     payload: PerceptionChunkJobPayload,
 ) -> ScreenCameraChunkAnalysis:
-    camera_cache_key = perception_chunk_cache_key(payload.chunk_id)
+    camera_cache_key = perception_chunk_cache_key(payload.chunk_id, payload.audio_available)
     screen_cache_key = screen_chunk_cache_key(payload.chunk_id)
 
     if payload.duration_ms < GEMINI_MIN_VIDEO_DURATION_MS:
@@ -774,6 +796,7 @@ async def analyze_screen_camera_chunk(
         chunk_start_s=round(payload.start_offset_ms / 1000),
         chunk_duration_s=round(payload.duration_ms / 1000),
         section_type=payload.section_id,
+        audio_available=payload.audio_available,
     )
     user = build_screen_camera_user_prompt(
         camera_user_input,
@@ -790,6 +813,7 @@ async def analyze_screen_camera_chunk(
         payload.signed_url,
         "video/webm",
         [user, clip_label],
+        check_audio_track=payload.audio_available,
     )
     deps.logger.info(
         "perception-chunk-job: resolved media parts (screen+camera)",
@@ -802,8 +826,16 @@ async def analyze_screen_camera_chunk(
         "temperature": 0,
         "maxOutputTokens": SCREEN_CAMERA_MAX_OUTPUT_TOKENS,
         "responseMimeType": "application/json",
-        "responseSchema": SCREEN_CAMERA_RESPONSE_SCHEMA,
-        "systemInstruction": SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT,
+        "responseSchema": (
+            SCREEN_CAMERA_RESPONSE_SCHEMA
+            if payload.audio_available
+            else SCREEN_CAMERA_RESPONSE_SCHEMA_NO_AUDIO
+        ),
+        "systemInstruction": (
+            SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT
+            if payload.audio_available
+            else SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT_NO_AUDIO
+        ),
     }
     meta = {"chunk_id": payload.chunk_id, "section_id": payload.section_id}
 
@@ -907,7 +939,7 @@ async def process_perception_chunk_job(
             return None
         analysis = await analyze_screen_camera_chunk(deps, payload)
         await deps.cache.set(
-            perception_chunk_cache_key(payload.chunk_id),
+            perception_chunk_cache_key(payload.chunk_id, payload.audio_available),
             analysis.camera.model_dump(by_alias=True),
         )
         if analysis.screen is not None:
@@ -942,7 +974,7 @@ async def process_perception_chunk_job(
 
     cached = await analyze_camera_chunk(deps, payload)
     await deps.cache.set(
-        perception_chunk_cache_key(payload.chunk_id),
+        perception_chunk_cache_key(payload.chunk_id, payload.audio_available),
         cached.model_dump(by_alias=True),
     )
     return cached

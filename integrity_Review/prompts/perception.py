@@ -1,23 +1,44 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
 from .shared import PERCEPTION_PROMPT_VERSION
 
 __all__ = [
+    "AUDIO_EVENT_ATTR_KEYS",
     "PERCEPTION_PROMPT_VERSION",
     "PERCEPTION_SYSTEM_PROMPT",
+    "PERCEPTION_SYSTEM_PROMPT_NO_AUDIO",
     "PERCEPTION_RESPONSE_SCHEMA",
+    "PERCEPTION_RESPONSE_SCHEMA_NO_AUDIO",
     "SCREEN_CAMERA_LAYOUT_RULE",
+    "SCREEN_CAMERA_LAYOUT_RULE_NO_AUDIO",
     "SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT",
+    "SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT_NO_AUDIO",
     "SCREEN_CAMERA_RESPONSE_SCHEMA",
+    "SCREEN_CAMERA_RESPONSE_SCHEMA_NO_AUDIO",
     "SCREEN_PERCEPTION_SYSTEM_PROMPT",
     "SCREEN_RESPONSE_SCHEMA",
     "build_perception_chunk_user_prompt",
     "build_screen_camera_user_prompt",
     "build_screen_perception_user_prompt",
 ]
+
+AUDIO_EVENT_ATTR_KEYS: tuple[str, ...] = (
+    "speechPresent",
+    "speechSource",
+    "speechOverlapWithLips",
+    "speechStyle",
+    "speechLanguage",
+    "codeMixing",
+    "backgroundVoices",
+    "deviceSounds",
+    "speechContentClass",
+    "conversationSummaryEn",
+    "notablePhrasesOriginal",
+)
 
 TERNARY = {"type": "string", "enum": ["yes", "no", "UNKNOWN"]}
 
@@ -107,6 +128,85 @@ PER-KIND ATTRS (MUST set when emitting that kind):
 - phone_visible: phoneVisible=yes; set objectInHand if held
 - sustained_gaze: gazeDirection + gazeTarget; prefer gazeStable, repeatedGazePattern, attentionState
 - speech: speechPresent=yes, speechContentClass (use unclear if unintelligible — not UNKNOWN), conversationSummaryEn (required; meta paraphrase if unintelligible); prefer speechSource, speechLanguage, speechOverlapWithLips
+- second_person_present: secondPersonVisible=yes + secondPersonLooksLike/position/roleCue when known
+- second_person_interaction: secondPersonInteracting=yes + candidateRespondingToSecondPerson/activity/objectInHand + looksLike when known
+- notes_visible: notebookVisible and/or paperVisible=yes
+- headphones_visible: headphonesVisible=yes; prefer headphonesLink=wired|wireless when known
+- earphone_visible: earphoneVisible=yes; prefer earphoneLink=wired|wireless when known
+- second_screen_visible: secondScreenVisible=yes
+- face_absent: facePresent=no
+- leave_seat: leftSeat=yes
+- reaching_outside_frame: reachingOutsideFrame=yes + reachingDirection when known"""
+
+PERCEPTION_SYSTEM_PROMPT_NO_AUDIO = """You are a structured visual observation system for an online exam integrity platform.
+
+ROLE: Observe exactly what is visible in this video clip. Report ONLY observable facts. This clip has NO audio track — there is nothing to hear. Never report speech, conversation, or anything heard, said, whispered or dictated; never infer it from lip movement, gestures, someone appearing to talk, or text typed on screen.
+
+STRICT RULES:
+1. NEVER conclude cheating or risk — only describe what is visibly present
+2. NEVER use evaluative words like "suspicious", "cheating", "violating", "copying"
+3. "UNKNOWN" is always valid — return it whenever frame quality prevents certainty
+4. Each field is independent — do not let one observation bias another
+5. Exam context: shared rooms, family nearby, fans/noise, varying lighting are all normal
+6. Machine Facts in the prompt are deterministic platform events. Treat them as contextual information only. Never recreate them, never contradict them, never infer additional Machine Facts from the video.
+7. Never assign risk. Never generate recommendations or verdicts of any kind.
+8. When capture quality is LOW or NONE, prefer UNKNOWN for any field that cannot be clearly determined. Never invent visual detail that is not visible in the frame.
+9. The hands.* group describes ONLY the exam candidate — the person whose face is most prominently facing the camera. If another person's hands are visible in the frame, ignore them entirely for all hands.* fields.
+10. identity.identityConsistent: report "no" only when the face appears to be a genuinely different person than in recent prior context based on visible facial structure. Changes in lighting, angle, or expression alone are NOT enough — only report "no" for a clear person change.
+11. people.secondPersonInteracting: "yes" means the second person is actively engaging with the candidate — speaking to them, handing them something, pointing at their screen, or physically approaching them. "no" means the second person is present but not engaging with the candidate.
+12. people.candidateRespondingToSecondPerson: "yes" means the candidate has visibly turned toward, spoken to, or accepted something from the second person. "no" means the candidate remained focused on their own work despite the second person's presence.
+13. people.secondPersonLooksLike distinguishes live people from reflections, posters/photos, and on-screen video. people.secondPersonPosition and people.secondPersonRoleCue are soft observational cues only.
+13a. Whenever a second person is visible, ALWAYS give people.secondPersonRoleCue your best read instead of leaving it UNKNOWN — it is what separates an invigilator from a helper downstream. Uniform, lanyard, ID badge, standing and addressing the room, walking a row, handing out or collecting papers, gesturing at the candidate's screen while speaking to them formally → "invigilator_or_staff". Seated alongside at a peer desk, leaning toward the candidate's screen, whispering at close range → "peer_helper". Domestic setting, entering and leaving casually → "household". Crossing the frame without stopping → "passerby". Use UNKNOWN only when the person is too obscured to judge.
+14. TIMING — startMsLocal/endMsLocal must bracket the event itself, not the clip. For kind=sustained_gaze, start when the gaze leaves the screen and end when it returns: this duration is read directly as how long the candidate looked away, and a gaze spanning the whole clip because the bounds were left wide reads as a minute-long stare. Always set attention.gazeTarget for a gaze event.
+15. CONTINUITY — when an event is the continuation of one you reported at the very end of the previous chunk (the same gaze, the same person still present, the same conversation), list that event's id in linkedPriorEventIds. It lets a behaviour that straddles a chunk boundary be measured once rather than as two short fragments.
+
+FIELD ENUMS — use EXACTLY these strings (case-sensitive) inside event attrs (and chunkBaseline where applicable):
+identity.facePresent: "yes"|"no"|"UNKNOWN"
+identity.identityConsistent: "yes"|"no"|"UNKNOWN"
+identity.faceOccluded: "yes"|"no"|"UNKNOWN"
+identity.faceOrientation: "toward_camera"|"turned_left"|"turned_right"|"down"|"up"|"UNKNOWN"
+attention.gazeDirection: "screen"|"left"|"right"|"down"|"up"|"away"|"UNKNOWN"
+attention.gazeStable: "yes"|"no"|"UNKNOWN"
+attention.repeatedGazePattern: "none"|"left_recurring"|"right_recurring"|"down_recurring"|"UNKNOWN"
+attention.attentionState: "focused"|"distracted"|"thinking"|"UNKNOWN"
+attention.gazeTarget: "primary_screen"|"secondary_monitor"|"phone"|"other_person"|"off_screen_general"|"UNKNOWN"
+hands.handsVisible: "yes"|"no"|"UNKNOWN"
+hands.handCount: integer≥0 or "UNKNOWN"
+hands.handLocation: "keyboard"|"desk"|"phone"|"below_frame"|"face"|"other"|"UNKNOWN"
+hands.handActivity: "typing"|"writing"|"holding_object"|"idle"|"UNKNOWN"
+hands.objectInHand: "phone"|"pen"|"paper"|"book"|"none"|"UNKNOWN"
+objects.phoneVisible: "yes"|"no"|"UNKNOWN"
+objects.notebookVisible: "yes"|"no"|"UNKNOWN"
+objects.paperVisible: "yes"|"no"|"UNKNOWN"
+objects.calculatorVisible: "yes"|"no"|"UNKNOWN"
+objects.headphonesVisible: "yes"|"no"|"UNKNOWN"  (over-ear or on-ear wired/wireless headphones)
+objects.headphonesLink: "wired"|"wireless"|"UNKNOWN"  (set when headphonesVisible=yes; else UNKNOWN)
+objects.earphoneVisible: "yes"|"no"|"UNKNOWN"  (small in-ear wired or wireless earbuds/earpiece — distinct from headphones)
+objects.earphoneLink: "wired"|"wireless"|"UNKNOWN"  (set when earphoneVisible=yes; else UNKNOWN)
+objects.secondScreenVisible: "yes"|"no"|"UNKNOWN"  (a secondary monitor or screen in frame, separate from the primary exam screen)
+objects.unknownObjectVisible: "yes"|"no"|"UNKNOWN"
+people.secondPersonVisible: "yes"|"no"|"UNKNOWN"
+people.secondPersonInteracting: "yes"|"no"|"UNKNOWN"
+people.secondPersonObjectInHand: "phone"|"paper"|"none"|"UNKNOWN"
+people.secondPersonActivity: "using_phone"|"reading"|"writing"|"speaking_to_candidate"|"passing_by"|"idle"|"UNKNOWN"
+people.candidateRespondingToSecondPerson: "yes"|"no"|"UNKNOWN"
+people.secondPersonPosition: "background"|"adjacent"|"behind"|"leaning_in"|"UNKNOWN"
+people.secondPersonLooksLike: "live_person"|"reflection"|"poster_or_photo"|"on_screen_video"|"UNKNOWN"
+people.secondPersonRoleCue: "unknown"|"peer_helper"|"household"|"invigilator_or_staff"|"passerby"|"UNKNOWN"
+environment.lightingCondition: "adequate"|"dim"|"bright"|"backlit"|"UNKNOWN"
+environment.framing: "full_face"|"partial"|"obscured"|"off_center"|"UNKNOWN"
+environment.settingType: "private_room"|"shared_space"|"exam_hall"|"UNKNOWN"
+body.leftSeat: "yes"|"no"|"UNKNOWN"
+interaction.reachingOutsideFrame: "yes"|"no"|"UNKNOWN"
+interaction.reachingDirection: "down"|"left"|"right"|"forward"|"none"|"UNKNOWN"
+
+TIMED EVENTS:
+Emit events[] with exact startMsLocal/endMsLocal/durationMs for every notable behavioural span. Do not bucket into fixed windows. Put observation fields into attrs using the FIELD ENUMS above. Quiet clip → events=[] with chunkFullyReviewed=true.
+
+PER-KIND ATTRS (MUST set when emitting that kind):
+- phone_in_hand: phoneVisible=yes, objectInHand=phone, handsVisible=yes; prefer handLocation=phone; optional handActivity=holding_object
+- phone_visible: phoneVisible=yes; set objectInHand if held
+- sustained_gaze: gazeDirection + gazeTarget; prefer gazeStable, repeatedGazePattern, attentionState
 - second_person_present: secondPersonVisible=yes + secondPersonLooksLike/position/roleCue when known
 - second_person_interaction: secondPersonInteracting=yes + candidateRespondingToSecondPerson/activity/objectInHand + looksLike when known
 - notes_visible: notebookVisible and/or paperVisible=yes
@@ -472,6 +572,29 @@ PERCEPTION_RESPONSE_SCHEMA: dict[str, Any] = {
     },
 }
 
+def _strip_audio_from_perception_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    stripped = copy.deepcopy(schema)
+    events_items = stripped["properties"]["events"]["items"]
+    kind_enum = events_items["properties"]["kind"]["enum"]
+    events_items["properties"]["kind"]["enum"] = [k for k in kind_enum if k != "speech"]
+
+    attrs_schema = events_items["properties"]["attrs"]
+    attrs_schema["required"] = [
+        key for key in attrs_schema.get("required", []) if key not in AUDIO_EVENT_ATTR_KEYS
+    ]
+    for key in AUDIO_EVENT_ATTR_KEYS:
+        attrs_schema["properties"].pop(key, None)
+
+    chunk_baseline = stripped["properties"].get("chunkBaseline")
+    if chunk_baseline is not None:
+        chunk_baseline["properties"].pop("audioNotes", None)
+    return stripped
+
+
+PERCEPTION_RESPONSE_SCHEMA_NO_AUDIO: dict[str, Any] = _strip_audio_from_perception_schema(
+    PERCEPTION_RESPONSE_SCHEMA
+)
+
 SCREEN_PERCEPTION_SYSTEM_PROMPT = """You are a structured screen-recording observation system for an online exam integrity platform.
 
 Observe what is VISIBLE on the candidate's screen. Report ONLY observable facts. Never conclude cheating or risk. "UNKNOWN" when blank/blurred/unreadable. Do NOT describe faces, gaze, or people.
@@ -535,10 +658,47 @@ Keep the halves strictly independent:
 
 Return one JSON object with exactly two keys: "camera" and "screen"."""
 
+SCREEN_CAMERA_LAYOUT_RULE_NO_AUDIO = """LAYOUT — THIS CLIP CARRIES BOTH SIGNALS IN ONE FILE.
+
+This is a screen recording with the candidate's webcam composited into it as a
+picture-in-picture inset (a small rectangle in one corner). The inset may be
+blank, black, frozen or absent — that is normal, and it means the camera half
+is UNKNOWN, not that anything is wrong. This clip has NO audio track — there
+is nothing to hear on either half.
+
+Produce BOTH halves of the response from this one clip:
+- The "camera" half describes ONLY what is inside the webcam inset: the person,
+  their hands, objects they hold, people and movement behind them.
+- The "screen" half describes ONLY the screen content OUTSIDE the inset: the
+  exam UI, applications, browser tabs, editors and any visible text.
+
+Keep the halves strictly independent:
+- Never let one half inform the other. Do not infer screen activity from what
+  the person appears to be doing, and do not infer the person's attention,
+  gaze or behaviour from what is on the screen.
+- The inset is NOT a second screen: never report it as objects.secondScreenVisible
+  or as screen.secondaryWorkspaceVisible.
+- A person visible on the screen itself (a video call, a recorded lecture) is
+  screen content, not a second person in the room. Report people only from the
+  inset, and use people.secondPersonLooksLike="on_screen_video" if the inset
+  itself shows one.
+- attention.gazeDirection describes where the person in the inset is looking
+  relative to their own camera, exactly as for a standalone webcam clip.
+- If the inset is blank or absent, return camera events=[] with
+  captureQualityTier="NONE" and still fill the screen half normally.
+
+Return one JSON object with exactly two keys: "camera" and "screen"."""
+
 SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT = (
     f"{PERCEPTION_SYSTEM_PROMPT}\n\n"
     f"{SCREEN_PERCEPTION_SYSTEM_PROMPT}\n\n"
     f"{SCREEN_CAMERA_LAYOUT_RULE}"
+)
+
+SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT_NO_AUDIO = (
+    f"{PERCEPTION_SYSTEM_PROMPT_NO_AUDIO}\n\n"
+    f"{SCREEN_PERCEPTION_SYSTEM_PROMPT}\n\n"
+    f"{SCREEN_CAMERA_LAYOUT_RULE_NO_AUDIO}"
 )
 
 SCREEN_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -589,12 +749,35 @@ SCREEN_CAMERA_RESPONSE_SCHEMA: dict[str, Any] = {
     },
 }
 
+SCREEN_CAMERA_RESPONSE_SCHEMA_NO_AUDIO: dict[str, Any] = {
+    "type": "object",
+    "required": ["camera", "screen"],
+    "properties": {
+        "camera": PERCEPTION_RESPONSE_SCHEMA_NO_AUDIO,
+        "screen": SCREEN_RESPONSE_SCHEMA,
+    },
+}
+
 
 PER_KIND_ATTRS_CHECKLIST = """Per-kind attrs checklist (MUST):
 - phone_in_hand → phoneVisible=yes, objectInHand=phone, handsVisible=yes; prefer handLocation=phone
 - phone_visible → phoneVisible=yes; objectInHand if held
 - sustained_gaze → gazeDirection + gazeTarget
 - speech → speechPresent=yes, speechContentClass (unclear if unintelligible), conversationSummaryEn (required)
+- second_person_present → secondPersonVisible=yes + looksLike/position/roleCue
+- second_person_interaction → interacting=yes + responding/activity/objectInHand
+- notes_visible → notebookVisible and/or paperVisible=yes
+- headphones_visible → headphonesVisible=yes + headphonesLink when known
+- earphone_visible → earphoneVisible=yes + earphoneLink when known
+- second_screen_visible → secondScreenVisible=yes
+- face_absent → facePresent=no
+- leave_seat → leftSeat=yes
+- reaching_outside_frame → reachingOutsideFrame=yes + reachingDirection when known"""
+
+PER_KIND_ATTRS_CHECKLIST_NO_AUDIO = """Per-kind attrs checklist (MUST):
+- phone_in_hand → phoneVisible=yes, objectInHand=phone, handsVisible=yes; prefer handLocation=phone
+- phone_visible → phoneVisible=yes; objectInHand if held
+- sustained_gaze → gazeDirection + gazeTarget
 - second_person_present → secondPersonVisible=yes + looksLike/position/roleCue
 - second_person_interaction → interacting=yes + responding/activity/objectInHand
 - notes_visible → notebookVisible and/or paperVisible=yes
@@ -616,6 +799,7 @@ class PerceptionChunkUserPromptInput:
     machine_fact_hints: list[dict[str, Any]] | None = None
     open_event_tail: list[dict[str, Any]] | None = None
     prior_context: dict[str, str] | None = None
+    audio_available: bool = True
 
 
 def build_perception_chunk_user_prompt(input: PerceptionChunkUserPromptInput) -> str:
@@ -643,7 +827,15 @@ def build_perception_chunk_user_prompt(input: PerceptionChunkUserPromptInput) ->
         if input.prior_context
         else "(none — first chunk or no prior)"
     )
-    return f"""Analyze this entire webcam clip in one pass. Watch AND listen.
+    watch_line = (
+        "Watch AND listen."
+        if input.audio_available
+        else "Watch this clip. It has NO audio track — never report speech or anything heard."
+    )
+    checklist = (
+        PER_KIND_ATTRS_CHECKLIST if input.audio_available else PER_KIND_ATTRS_CHECKLIST_NO_AUDIO
+    )
+    return f"""Analyze this entire webcam clip in one pass. {watch_line}
 chunkId: "{input.chunk_id}"
 Session offset: {input.chunk_start_s}s – {input.chunk_start_s + input.chunk_duration_s}s
 Clip-local time: 0s – {input.chunk_duration_s}s ({input.chunk_duration_s * 1000} ms)
@@ -657,7 +849,7 @@ Open events from previous chunk (continue or close with absolute local times if 
 
 Prior visual context: {prior}
 
-{PER_KIND_ATTRS_CHECKLIST}
+{checklist}
 
 Return JSON matching the schema: chunkFullyReviewed, captureQualityTier, chunkBaseline, and events[] with exact startMsLocal/endMsLocal/durationMs and attrs using FIELD ENUMS. Quiet clip → events=[]."""
 

@@ -88,6 +88,33 @@ def webm_has_audio_track(data: bytes) -> bool:
     return any(codec in data for codec in _AUDIO_CODEC_IDS)
 
 
+async def probe_webm_audio_track(
+    signed_url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    probe_bytes: int = 65_536,
+) -> bool | None:
+    owns_client = client is None
+    active = client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await active.get(
+            signed_url,
+            headers={"Range": f"bytes=0-{probe_bytes - 1}"},
+        )
+        if response.status_code not in (200, 206):
+            return None
+        data = response.content
+    except httpx.HTTPError:
+        return None
+    finally:
+        if owns_client:
+            await active.aclose()
+
+    if not is_ebml_magic(data):
+        return None
+    return webm_has_audio_track(data)
+
+
 def build_parts_from_url(
     signed_url: str,
     mime_type: str,
@@ -121,6 +148,7 @@ async def resolve_media_parts(
     text_parts: Sequence[str],
     *,
     client: httpx.AsyncClient | None = None,
+    check_audio_track: bool = True,
 ) -> tuple[list[MediaPart], MediaDelivery]:
     async def _fetch_range() -> bytes | None:
         owns_client = client is None
@@ -158,6 +186,6 @@ async def resolve_media_parts(
         raise ValueError("perception media decoded to empty buffer")
     resolved_mime = "video/webm" if is_ebml_magic(decoded) else mime_type
     parts = list(text_parts)
-    if is_ebml_magic(decoded) and not webm_has_audio_track(decoded):
+    if check_audio_track and is_ebml_magic(decoded) and not webm_has_audio_track(decoded):
         parts.append(SILENT_CLIP_NOTE)
     return build_parts_from_inline(decoded, resolved_mime, parts), "inline_data"

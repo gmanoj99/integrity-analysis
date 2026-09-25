@@ -177,6 +177,7 @@ async def assemble_perception_from_streamed_chunks(
     candidate_id: str,
     assessment_id: str,
     master_timeline: MasterTimeline,
+    audio_available: bool = True,
 ) -> PerceptionBundle:
     spans = video_chunk_spans(master_timeline)
     live_start_ms = (
@@ -193,7 +194,7 @@ async def assemble_perception_from_streamed_chunks(
     for span in spans:
         window = chunk_to_window(span, live_start_ms)
         windows.append(window)
-        cache_key = perception_chunk_cache_key(span.chunk_id)
+        cache_key = perception_chunk_cache_key(span.chunk_id, audio_available)
         raw = await deps.cache.get(cache_key)
         streamed = _load_cached_chunk(raw if isinstance(raw, dict) else None)
 
@@ -287,9 +288,11 @@ async def build_perception_bundle(
     candidate_id: str,
     assessment_id: str,
     master_timeline: MasterTimeline,
+    audio_available: bool = True,
 ) -> PerceptionBundle:
     version_hash = compute_perception_version_hash(master_timeline)
-    bundle_cache_key = f"perception_observations:{version_hash}"
+    suffix = "" if audio_available else "-no-audio"
+    bundle_cache_key = f"perception_observations{suffix}:{version_hash}"
     cached = await deps.cache.get(bundle_cache_key)
     if isinstance(cached, dict) and cached.get("bundle"):
         return PerceptionBundle.model_validate(cached["bundle"])
@@ -300,6 +303,7 @@ async def build_perception_bundle(
         candidate_id=candidate_id,
         assessment_id=assessment_id,
         master_timeline=master_timeline,
+        audio_available=audio_available,
     )
 
     total_video_chunks = len(video_chunk_spans(master_timeline))

@@ -7,7 +7,7 @@ from typing import Any
 from .adapters.ai_usage_logger import STEP_DELIBERATION
 from .behavioral_pipeline import BehavioralArtifacts, decode_rrweb_chunks, run_behavioral_analysis
 from .contracts.evidence import EvidenceType, ExamMode
-from .contracts.evidence_bundle import EvidenceBundle, MediaIndexEntry
+from .contracts.evidence_bundle import EvidenceBundle
 from .contracts.perception import PerceptionChunkJobPayload, PerceptionObservation
 from .contracts.review import ReviewRequest
 from .deliberation import (
@@ -19,6 +19,7 @@ from .deps import PipelineDeps
 from .evidence_bundle import EvidenceBundleInput, assemble_evidence_bundle
 from .findings.contracts import EvidenceFinding, VideoObservationWindow
 from .gemini_call import generate_and_log
+from .media.perception_media import probe_webm_audio_track
 from .perception import (
     build_perception_bundle,
     build_screen_perception_bundle,
@@ -48,6 +49,25 @@ def _job_evidence_type(evidence_type: EvidenceType) -> str:
     return "screenRecording"
 
 
+async def _resolve_assessment_audio_available(
+    relevant: list[tuple[Any, Any]],
+    media_uris: list[str],
+    deps: PipelineDeps,
+) -> bool:
+    candidates = sorted(
+        (
+            (chunk.sequence, media_uri)
+            for (_, chunk), media_uri in zip(relevant, media_uris, strict=True)
+            if _job_evidence_type(chunk.evidence_type) in {"video", "screenCamera"}
+        ),
+        key=lambda item: item[0],
+    )
+    if not candidates:
+        return True
+    probed = await probe_webm_audio_track(candidates[0][1])
+    return True if probed is None else probed
+
+
 async def _perception_jobs(
     request: ReviewRequest, timeline: Any, deps: PipelineDeps
 ) -> list[PerceptionChunkJobPayload]:
@@ -60,6 +80,11 @@ async def _perception_jobs(
     ]
     media_uris = await asyncio.gather(
         *(deps.media_uri_provider.media_uri_for(chunk) for _, chunk in relevant)
+    )
+    audio_available = await _resolve_assessment_audio_available(relevant, media_uris, deps)
+    deps.logger.info(
+        "integrity-review: audio track probe",
+        audio_available=audio_available,
     )
     return [
         PerceptionChunkJobPayload(
@@ -75,6 +100,7 @@ async def _perception_jobs(
             start_offset_ms=span.start_offset_ms,
             end_offset_ms=span.end_offset_ms,
             section_id=chunk.section_id,
+            audio_available=audio_available,
         )
         for (span, chunk), media_uri in zip(relevant, media_uris, strict=True)
     ]
@@ -281,6 +307,9 @@ async def run_integrity_review(
     )
 
     jobs = await _perception_jobs(request, timeline, deps)
+    # One probe result covers the whole assessment (see
+    # `_resolve_assessment_audio_available`), so any job carries it.
+    audio_available = jobs[0].audio_available if jobs else True
     deps.logger.info(
         "integrity-review: perception stage started",
         chunks=len(jobs),
@@ -297,6 +326,7 @@ async def run_integrity_review(
             candidate_id=request.candidate_id,
             assessment_id=request.assessment_id,
             master_timeline=timeline,
+            audio_available=audio_available,
         ),
         build_screen_perception_bundle(
             deps,
@@ -373,6 +403,7 @@ async def run_integrity_review(
             ),
             perception_version_hash=compute_perception_version_hash(timeline),
             baseline_version_hash=behavioral.baseline.baseline_version,
+            audio_available=audio_available,
         )
     )
 

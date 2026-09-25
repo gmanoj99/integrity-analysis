@@ -363,6 +363,20 @@ def _serialize_perception_observations(perception_bundle: Any) -> str:
             )
     ordered.sort(key=lambda item: item[1])
 
+    summaries_by_window: dict[str, list[str]] = {}
+    for event in getattr(perception_bundle, "events", []) or []:
+        text = str(attr(event, "summary", default="") or "").strip()
+        if not text:
+            continue
+        mid = (int(attr(event, "start_ms_session", "startMsSession", default=0) or 0)
+               + int(attr(event, "end_ms_session", "endMsSession", default=0) or 0)) // 2
+        for window_id, start_ms, end_ms, _, _ in ordered:
+            if start_ms <= mid < end_ms:
+                bucket = summaries_by_window.setdefault(window_id, [])
+                if text not in bucket:
+                    bucket.append(text)
+                break
+
     lines = [
         "PERCEPTION_OBSERVATIONS — every window of the session, in order.",
         'Cite as "windowId.fieldPath=value", copying a field=value printed under'
@@ -391,6 +405,12 @@ def _serialize_perception_observations(perception_bundle: Any) -> str:
             lines.append(f"  [{row_start},{row_end}] {seconds}s: " + "; ".join(values))
             if summary:
                 lines.append(f"    audio.conversationSummaryEn={summary}")
+        described = summaries_by_window.get(window_id, [])
+        if described and not printed:
+            lines.append(f"{header}:")
+            printed = True
+        for text in described:
+            lines.append(f"  summary: {text}")
         if not printed:
             lines.append(f"{header}: quiet")
     if len(lines) == 3:
@@ -498,11 +518,44 @@ def _signal_window_from_citations(
     return (min(s for s, _ in spans), max(e for _, e in spans))
 
 
+# Track B clears these only because a perception attribute came back UNKNOWN,
+# not because the evidence showed innocence, so deliberation re-judges them as
+# amber episodes instead of inheriting "do not emit".
+SOFT_CLEAR_REASONS = frozenset(
+    {"background_person_passing_by", "second_person_interacting_candidate_gaze_on_work"}
+)
+
+
+def _is_soft_clear(finding: Any) -> bool:
+    return (
+        str(_attr(finding, "verdict", default="")) == "cleared"
+        and _attr(finding, "data_gaps", "dataGaps") in SOFT_CLEAR_REASONS
+    )
+
+
+def _soft_clears_as_amber(video_findings: list[Any] | None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for finding in video_findings or []:
+        if not _is_soft_clear(finding):
+            continue
+        ref = str(_attr(finding, "evidence_ref", "evidenceRef", default="") or "")
+        window_ids = [w for w in ref.removeprefix("perception:w=").split("+") if w] if ref.startswith("perception:w=") else []
+        items.append(
+            {
+                "windowIds": window_ids,
+                "timestampWindowMs": _attr(finding, "timestamp_window_ms", "timestampWindowMs", default=(0, 0)),
+                "eventType": _attr(finding, "event_type", "eventType", default="unknown"),
+                "reason": _attr(finding, "data_gaps", "dataGaps"),
+            }
+        )
+    return items
+
+
 def _serialize_cleared_ledger(video_findings: list[Any] | None) -> str:
     cleared = [
         finding
         for finding in (video_findings or [])
-        if str(_attr(finding, "verdict", default="")) == "cleared"
+        if str(_attr(finding, "verdict", default="")) == "cleared" and not _is_soft_clear(finding)
     ]
     if not cleared:
         return "CLEARED LEDGER:\n  (none)"
@@ -533,6 +586,7 @@ def build_deliberation_prompt(input_data: DeliberationInput) -> str:
         video_findings=input_data.video_findings,
         machine_facts_bundle=input_data.machine_facts_bundle,
         perception_bundle=input_data.perception_bundle,
+        provisional_unknowns=_soft_clears_as_amber(input_data.video_findings),
     )
     user_prompt = build_deliberation_user_prompt(
         citation_inventory=_build_citation_inventory(
@@ -581,6 +635,7 @@ def build_deliberation_bundle(
         video_findings=input_data.video_findings,
         machine_facts_bundle=input_data.machine_facts_bundle,
         perception_bundle=input_data.perception_bundle,
+        provisional_unknowns=_soft_clears_as_amber(input_data.video_findings),
     )
 
     prompt = build_deliberation_prompt(input_data)
@@ -592,10 +647,13 @@ def build_deliberation_bundle(
     raw = parse_raw_output(raw_llm_text)
     raw_episodes, raw_signals = _parse_raw_signals(raw)
 
+    # Track-2 open-scan episodes (model_ep*) are the model's own finds beyond the
+    # deterministic inventory; they are held to the same citation rules below.
     adjudicated_by_id = {
         ep.episode_id: ep
         for ep in raw_episodes
         if any(inv.episode_id == ep.episode_id for inv in episode_inventory)
+        or ep.episode_id.startswith("model_ep")
     }
 
     facts = getattr(input_data.machine_facts_bundle, "facts", []) or []
