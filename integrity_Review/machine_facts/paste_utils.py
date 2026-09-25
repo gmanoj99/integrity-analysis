@@ -1,5 +1,3 @@
-"""Paste origin refinement and reportability gates."""
-
 from __future__ import annotations
 
 import re
@@ -153,11 +151,6 @@ def refine_paste_origins(facts: list[MachineFact]) -> None:
             detail["pasteOrigin"] = "internal"
             detail["pasteOriginReason"] = "preceding_copy"
         elif detail.get("pasteOrigin") != "internal":
-            # Not matched to anything inside the session is not the same as
-            # having come from outside it. The corpus only holds what the
-            # recorder captured, so a candidate reusing her own code from a
-            # place we did not capture lands here too. "unknown" keeps the
-            # paste reportable while leaving the accusation unmade.
             detail["pasteOrigin"] = "unknown"
 
 

@@ -1,5 +1,3 @@
-"""Behavioral correlation detectors — port of correlationEngine.ts (behavioral scope only)."""
-
 from __future__ import annotations
 
 from .contracts import DEFAULT_CORRELATION_CONFIG, CorrelationConfig, DetectCtx, RiskContribution

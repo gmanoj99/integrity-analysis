@@ -1,5 +1,3 @@
-"""Keep one in-flight SQS message's visibility timeout extended while it is processed."""
-
 from __future__ import annotations
 
 import asyncio
@@ -19,8 +17,6 @@ class HeartbeatLogger(Protocol):
 
 
 class VisibilityHeartbeat:
-    """Async context manager: extends visibility every ``interval_seconds`` while open."""
-
     def __init__(
         self,
         sqs: VisibilitySqsClient,
@@ -65,8 +61,6 @@ class VisibilityHeartbeat:
                 self._logger.warning("visibility-heartbeat: extend failed", error=error)
                 continue
             extensions += 1
-            # One line per interval is the only in-flight liveness signal for a
-            # long review; without it a slow review looks like a hung task.
             self._logger.info(
                 "visibility-heartbeat: visibility extended",
                 extensions=extensions,

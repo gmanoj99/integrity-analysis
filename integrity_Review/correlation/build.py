@@ -1,5 +1,3 @@
-"""Build Scope 3.5 correlated signals bundle."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -49,8 +47,6 @@ def derive_correlated_signals(
 
     annotate_facts_with_question_boundaries(machine_facts.facts, boundaries)
 
-    # Provisional findings are evidence for correlation even though their
-    # verdict is the model's to give: a factor is a co-occurrence, not a call.
     flagged_video = [
         f for f in (video_findings or []) if f.verdict in {"flagged", "provisional"}
     ]

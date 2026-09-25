@@ -1,5 +1,3 @@
-"""Normalize raw WebM and legacy JSON-wrapped screen recordings."""
-
 from __future__ import annotations
 
 import base64
@@ -73,8 +71,6 @@ def is_ebml_magic(data: bytes) -> bool:
     return len(data) >= 4 and data[:4] == EBML_MAGIC
 
 
-# Matroska/WebM names its codecs as ASCII inside the Tracks element, so an
-# audio track always leaves one of these strings in the file.
 _AUDIO_CODEC_IDS = (b"A_OPUS", b"A_VORBIS", b"A_AAC", b"A_MPEG", b"A_PCM")
 
 SILENT_CLIP_NOTE = (
@@ -87,15 +83,6 @@ SILENT_CLIP_NOTE = (
 
 
 def webm_has_audio_track(data: bytes) -> bool:
-    """Whether the clip carries any audio at all.
-
-    Some recorders capture video only. Asked to observe what is "visible AND
-    audible", the perception model then writes speech it cannot have heard —
-    one attempt produced 39 windows of `speechPresent=yes` and 52 conversation
-    summaries from 183 silent chunks, and four of five confirmed signals cited
-    that audio. Knowing the track is absent is what lets us tell the model.
-    """
-
     if not is_ebml_magic(data):
         return False
     return any(codec in data for codec in _AUDIO_CODEC_IDS)
@@ -135,8 +122,6 @@ async def resolve_media_parts(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> tuple[list[MediaPart], MediaDelivery]:
-    """Resolve Gemini media parts for a signed URL (fileData vs inlineData)."""
-
     async def _fetch_range() -> bytes | None:
         owns_client = client is None
         active = client or httpx.AsyncClient(timeout=30.0)
@@ -174,9 +159,5 @@ async def resolve_media_parts(
     resolved_mime = "video/webm" if is_ebml_magic(decoded) else mime_type
     parts = list(text_parts)
     if is_ebml_magic(decoded) and not webm_has_audio_track(decoded):
-        # Said plainly, because the prompt otherwise asks for speech this clip
-        # cannot contain and the model obliges. Asked directly whether a silent
-        # clip has audio, the same model answers "no" — it needs telling, not
-        # a looser schema.
         parts.append(SILENT_CLIP_NOTE)
     return build_parts_from_inline(decoded, resolved_mime, parts), "inline_data"

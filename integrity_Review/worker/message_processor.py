@@ -1,22 +1,3 @@
-"""Idempotent single-message processing: parse, dedupe, run, publish, ack.
-
-Ordering invariant: the staged request message is deleted only *after* the
-result has been durably published (object written + SQS message sent). If
-publishing fails, the message is left in place for SQS to redeliver.
-
-Key design: the combined result object is the source of truth for what still
-needs work. The request carries no per-analysis flags; instead a branch whose
-payload key is already present is never recomputed, and a branch recorded under
-``unavailableAnalysis`` is impossible for this attempt and is never retried.
-
-Terminal-vs-retryable policy: every path that ends this review must publish
-either SUCCESS or FAILURE before the message is deleted, because the backend
-leaves the review IN_PROGRESS until a callback arrives. A condition that
-redelivery cannot fix (missing or malformed staged payload, a review_id
-mismatch, the final delivery attempt) is therefore reported as FAILURE and
-acked, and only genuinely transient errors are left for redelivery.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +26,6 @@ RESULT_MESSAGE_TYPE = "AI_ANALYSIS_RESPONSE"
 
 REVIEW_STATUS_SUCCESS = "SUCCESS"
 REVIEW_STATUS_FAILURE = "FAILURE"
-# The backend validates this against IntegrityReviewFailureReasonEnum, which
-# only accepts STALE / ENQUEUE_FAILED / ANALYSIS_FAILED — the cause goes in the
-# logs, not in this field.
 FAILURE_REASON_ANALYSIS_FAILED = "ANALYSIS_FAILED"
 
 COMBINED_RESULT_KEY_TEMPLATE = (
@@ -55,7 +33,6 @@ COMBINED_RESULT_KEY_TEMPLATE = (
     "{org_assess_id}/{attempt_user_id}/evidence_bundle.json"
 )
 
-# Discovery appends the org/user segments itself, so the prefix stops at the root.
 SEB_LOG_PREFIX_TEMPLATE = "{s3_media_prefix}/media/tsb_logs/"
 
 PUBLISH_ATTEMPTS = 3
@@ -66,7 +43,6 @@ BRANCH_SEB_LOG = "sebLog"
 
 UNAVAILABLE_KEY = "unavailableAnalysis"
 
-# Insertion order also fixes the key order of the written object.
 PAYLOAD_KEY_BY_BRANCH = {
     BRANCH_VIDEO: "videoAnalysis",
     BRANCH_SEB_LOG: "sebLogAnalysis",
@@ -79,12 +55,6 @@ OUTCOME_UNAVAILABLE = "UNAVAILABLE"
 
 @dataclass(frozen=True, slots=True)
 class BranchOutcome:
-    """One branch's result, before it is merged into the combined result.
-
-    ``reason`` is log-only for retryable failures; for unavailable branches it is
-    persisted so later deliveries can tell the work apart from work not yet done.
-    """
-
     kind: str
     payload: dict[str, Any] | None = None
     reason: str | None = None
@@ -104,8 +74,6 @@ class BranchOutcome:
 
 @dataclass(slots=True)
 class IntegrityReviewResult:
-    """Combined result for both branches, written once to S3."""
-
     review_id: str
     analyses: dict[str, dict[str, Any]] = field(default_factory=dict)
     unavailable: dict[str, str] = field(default_factory=dict)
@@ -114,7 +82,6 @@ class IntegrityReviewResult:
     def from_existing(
         cls, data: Mapping[str, Any], *, review_id: str
     ) -> IntegrityReviewResult:
-        """Read back a previously written object, keeping only usable entries."""
         analyses: dict[str, dict[str, Any]] = {}
         for branch, payload_key in PAYLOAD_KEY_BY_BRANCH.items():
             payload = data.get(payload_key)
@@ -139,7 +106,6 @@ class IntegrityReviewResult:
         ]
 
     def merge(self, branch: str, outcome: BranchOutcome) -> None:
-        """Fold one branch's outcome in, leaving other branches untouched."""
         if outcome.kind == OUTCOME_SUCCESS and outcome.payload is not None:
             self.analyses[branch] = outcome.payload
             self.unavailable.pop(branch, None)
@@ -232,8 +198,6 @@ class WorkerContext:
 
 
 class TerminalPayloadError(Exception):
-    """A staged request that redelivery can never make processable."""
-
     def __init__(self, cause: str, detail: str) -> None:
         super().__init__(f"{cause}: {detail}")
         self.cause = cause
@@ -242,8 +206,6 @@ class TerminalPayloadError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class MessageMeta:
-    """The queue-message facts worth logging for every delivery."""
-
     message_id: str | None
     receive_count: int
     sent_timestamp_ms: int | None
@@ -297,12 +259,6 @@ async def _load_existing_result(
     review_id: str,
     logger: Any,
 ) -> IntegrityReviewResult | None:
-    """Load the combined result so completed branches can be reused.
-
-    Returns an empty result when there is nothing usable to reuse, and ``None``
-    when an existing object could not be read. ``None`` leaves the message for
-    redelivery rather than overwriting analyses that may already have succeeded.
-    """
     try:
         exists = await ctx.result_store.head_object(result_key)
     except Exception as error:  # noqa: BLE001 - unknown state, retain the message
@@ -346,9 +302,6 @@ async def _publish_result(
     failure_reason: str | None,
     logger: Any,
 ) -> None:
-    """Send the callback, retrying briefly so one flaky SQS call does not force
-    a full redelivery (and, on the success path, a re-run of the pipeline)."""
-
     body = json.dumps(
         {
             "message_type": RESULT_MESSAGE_TYPE,
@@ -404,12 +357,6 @@ async def _fail_and_ack(
     cause: str,
     detail: str,
 ) -> None:
-    """Report FAILURE for a review that cannot succeed, then ack the message.
-
-    If the callback itself cannot be sent, the message is retained so a later
-    delivery can retry it — acking here would strand the review IN_PROGRESS.
-    """
-
     logger.error(
         "message-processor: review terminally failed",
         cause=cause,
@@ -439,12 +386,6 @@ async def _run_video_analysis_branch(
     payload: StagedReviewPayload,
     logger: Any,
 ) -> BranchOutcome:
-    """Run video/audio analysis and return its outcome in memory.
-
-    An attempt the backend did not ask for is unavailable rather than
-    retryable: no amount of redelivery makes video analysis wanted for this
-    attempt.
-    """
     if not payload.should_analyse_video:
         logger.info("message-processor: video analysis not requested for this attempt")
         return BranchOutcome.unavailable("VIDEO_ANALYSIS_NOT_REQUESTED")
@@ -455,9 +396,6 @@ async def _run_video_analysis_branch(
         summary = normalized.summary
         log_fields = summary.as_log_fields()
         if summary.has_degradations:
-            # Expected for real attempts (unopened sections, partial uploads);
-            # logged as a warning so it is searchable without being treated as
-            # a failure.
             logger.warning(
                 "message-processor: staged payload accepted with degradations",
                 **log_fields,
@@ -508,9 +446,6 @@ async def _run_video_analysis_branch(
 
 
 def _bundle_log_fields(bundle: Any) -> dict[str, Any]:
-    """The bundle's headline numbers — never the bundle itself, which is large
-    and carries candidate content."""
-
     try:
         return _bundle_headline(bundle)
     except Exception:  # noqa: BLE001 - logging must never fail a completed review
@@ -539,7 +474,6 @@ def _run_seb_log_reduction_sync(
     org_assessment_id: str,
     user_id: str,
 ) -> list[Any]:
-    """Synchronous reduction wrapper for asyncio.to_thread."""
     return list(
         run_seb_log_reduction(
             seb_deps,
@@ -555,12 +489,6 @@ async def _run_seb_log_analysis_branch(
     payload: StagedReviewPayload,
     logger: Any,
 ) -> BranchOutcome:
-    """Run SEB log reduction and AI analysis, returning the outcome in memory.
-
-    An attempt the backend did not ask for and an empty session list are both
-    unavailable rather than retryable: no amount of redelivery makes logs appear
-    for this attempt.
-    """
     if not payload.should_analyse_seb_logs:
         logger.info("message-processor: SEB analysis not requested for this attempt")
         return BranchOutcome.unavailable("SEB_ANALYSIS_NOT_REQUESTED")
@@ -650,8 +578,6 @@ async def _run_and_publish(
     receipt_handle: str,
     logger: Any,
 ) -> None:
-    """Run the pending branches concurrently, merge them into the loaded result,
-    write once, and publish."""
     await ctx.task_protection.acquire()
     try:
         async with VisibilityHeartbeat(
@@ -669,7 +595,6 @@ async def _run_and_publish(
 
             for branch, outcome in zip(branches, outcomes, strict=True):
                 if isinstance(outcome, BaseException):
-                    # Left unresolved, so the branch stays pending and retriggerable.
                     logger.error(
                         "message-processor: branch raised unexpectedly",
                         branch=branch,
@@ -717,13 +642,9 @@ async def _run_and_publish(
 async def _load_staged_payload(
     ctx: WorkerContext, envelope: SqsRequestEnvelope, logger: Any
 ) -> StagedReviewPayload:
-    """Fetch and validate the staged payload, classifying terminal failures."""
-
     try:
         raw_payload = await ctx.request_store.get_json(envelope.payload_s3_key)
     except ObjectNotFoundError as error:
-        # The backend writes this object once, before enqueueing; if it is gone
-        # no redelivery will bring it back.
         raise TerminalPayloadError("STAGED_PAYLOAD_MISSING", str(error)) from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise TerminalPayloadError("STAGED_PAYLOAD_NOT_JSON", str(error)) from error
@@ -741,7 +662,6 @@ async def _load_staged_payload(
     try:
         return StagedReviewPayload.model_validate(raw_payload)
     except ValidationError as error:
-        # The staged payload never changes, so redelivery can only repeat this.
         raise TerminalPayloadError("STAGED_PAYLOAD_INVALID", str(error)) from error
 
 
@@ -751,8 +671,6 @@ async def _process_envelope(
     payload = await _load_staged_payload(ctx, envelope, logger)
 
     if payload.review_id != envelope.review_id:
-        # Nothing else will ever resolve the review the envelope names, so it
-        # has to be failed explicitly rather than silently dropped.
         await _fail_and_ack(
             ctx,
             review_id=envelope.review_id,
@@ -805,9 +723,6 @@ async def _process_envelope(
 
 
 async def handle_message(ctx: WorkerContext, message: dict[str, Any]) -> None:
-    # Poison-message policy: a malformed envelope or unsupported message_type can
-    # never become processable by redelivery, so it is deleted directly here
-    # rather than left in place for the queue's own redrive-to-DLQ policy.
     receipt_handle = message["ReceiptHandle"]
     meta = MessageMeta.from_message(message)
     body = message.get("Body", "")
@@ -862,8 +777,6 @@ async def handle_message(ctx: WorkerContext, message: dict[str, Any]) -> None:
         )
     except Exception as error:  # noqa: BLE001 - worker safety net
         if is_last_attempt:
-            # Last delivery before the DLQ: report the failure now, otherwise
-            # the review stays IN_PROGRESS until the backend's stale sweeper.
             await _fail_and_ack(
                 ctx,
                 review_id=envelope.review_id,

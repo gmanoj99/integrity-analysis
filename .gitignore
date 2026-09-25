@@ -21,10 +21,11 @@ env/
 .env
 .env.*
 
-# Local review payload (signed URLs) and generated results
-input/input.json
-output/*
-!output/.gitkeep
+# Review inputs (signed URLs) and generated results
+input/
+output/
+new_input/
+new_output/
 
 # Media / large artifacts
 *.webm
@@ -37,3 +38,8 @@ output/*
 .DS_Store
 
 tests
+
+infra 11.zip
+
+worker logs
+worker logs 1

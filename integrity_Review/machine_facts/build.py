@@ -1,5 +1,3 @@
-"""Build the Scope 1 MachineFacts bundle from timeline + rrweb evidence."""
-
 from __future__ import annotations
 
 import uuid
@@ -203,7 +201,6 @@ def build_machine_facts(
     client_reported_events: list[ClientReportedEvent] | None = None,
     screen_synthetic_facts: list[MachineFact] | None = None,
 ) -> MachineFactsBundle:
-    """Compute-once Scope 1 bundle. Screen and rrweb DOM paths are mutually exclusive."""
     session_start_ms = timeline.session_start_ms
     sections = timeline.sections
     all_facts: list[MachineFact] = []

@@ -1,9 +1,3 @@
-"""Behavioral analysis orchestration (Scope 1 → 3.5).
-
-Integrates timeline + media decoding with machine facts, findings, baseline,
-and correlation. Screen and rrweb DOM paths are mutually exclusive via ExamMode.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

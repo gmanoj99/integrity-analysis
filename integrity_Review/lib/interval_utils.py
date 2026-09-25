@@ -1,12 +1,9 @@
-"""Interval helpers for session-offset ranges (milliseconds)."""
-
 from __future__ import annotations
 
 MsInterval = tuple[int, int]
 
 
 def union_interval_length_ms(intervals: list[MsInterval]) -> int:
-    """Union length of half-open intervals [start, end). Overlaps merge."""
     if not intervals:
         return 0
     sorted_intervals = sorted((a, b) for a, b in intervals if b > a)
@@ -42,7 +39,6 @@ def _merge_intervals(intervals: list[MsInterval]) -> list[tuple[int, int]]:
 
 
 def intersect_union_length_ms(a: list[MsInterval], b: list[MsInterval]) -> int:
-    """Length of intersection of two interval unions."""
     left = _merge_intervals(a)
     right = _merge_intervals(b)
     if not left or not right:

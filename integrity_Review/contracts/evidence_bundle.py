@@ -1,5 +1,3 @@
-"""Scope 5 evidence bundle contracts (video / screen / rrweb; no cohort extras)."""
-
 from typing import Literal
 
 from pydantic import Field
@@ -25,8 +23,6 @@ class ClipSegment(ContractModel):
 
 
 class ClipRef(ContractModel):
-    """Offset-only playback reference — no archived clip bytes."""
-
     segments: list[ClipSegment] = Field(default_factory=list)
     clip_start_ms: int = Field(ge=0)
     clip_end_ms: int = Field(ge=0)
@@ -79,11 +75,6 @@ class ConfidenceSection(ContractModel):
     screen_coverage_label: str | None = None
     video_modality_absent: bool | None = None
 
-    # Which modalities this review actually analysed, so the UI can hide the
-    # tabs for the ones it did not. The coverage labels above also imply this
-    # by being null, but they carry a percentage in their text and reviewers
-    # are never shown how much of a session was analysed — parsing them for
-    # presence would put that number one careless render away from the screen.
     video_analysed: bool = False
     screen_analysed: bool = False
     keystroke_analysed: bool = False
@@ -99,17 +90,7 @@ class HypothesisArmEntry(ContractModel):
 
 
 class DetectedSignalEntry(ContractModel):
-    """The audit trail behind a signal — why it was concluded, and from what.
-
-    Everything a reviewer reads (type, window, confidence, resolution, source
-    types, clip) already lives on the card that references this by ``signalId``.
-    Only the hypotheses and citations are unique to this section, and they are
-    what a disputed decision has to be defended with.
-    """
-
     signal_id: str
-    # The trackBObservations card this signal is rendered under, so the UI can
-    # nest one inside the other without re-deriving the id.
     card_id: str | None = None
     supporting_observations: list[str] = Field(default_factory=list)
     supporting_machine_facts: list[str] = Field(default_factory=list)
@@ -138,16 +119,6 @@ TrackBStatus = Literal["confirmed", "cleared", "context", "unknown"]
 
 
 class KeystrokeEvidence(ContractModel):
-    """What the typing layer actually saw, for the reviewer to read.
-
-    The deterministic keystroke findings carry this, but a finding is folded
-    into whichever card covers its window and only its event type survived as
-    an ``evidence_refs`` string — so the pasted text, the size of the paste and
-    the pause before it were computed on every rrweb session and then dropped
-    before the payload was built. A reviewer had the word "external paste" and
-    no way to see what was pasted.
-    """
-
     pasted_excerpt: str | None = None
     inserted_char_count: int | None = None
     final_value_length: int | None = None
@@ -157,20 +128,6 @@ class KeystrokeEvidence(ContractModel):
 
 
 class TrackBObservationCard(ContractModel):
-    """The single reviewer-facing card.
-
-    This is the only section the review UI renders, so it carries the
-    deliberation verdict rather than the raw deterministic finding: a card is
-    ``confirmed`` when the model emitted a signal for it, ``cleared`` when the
-    model considered and dismissed it, ``context`` for permitted interactions
-    (invigilator, technical help) and ``unknown`` for coverage gaps. Cleared
-    and context cards stay in the payload — a reviewer has to be able to tell
-    "nothing happened" from "nothing was analysed".
-
-    ``event_type`` is an open vocabulary: it carries the model's own signal
-    type or episode classification, not a fixed enum.
-    """
-
     id: str
     event_type: str
     title: str
@@ -182,30 +139,23 @@ class TrackBObservationCard(ContractModel):
     detail: str | None = None
     evidence_strength: Literal["strong", "moderate", "thin"] | None = None
 
-    # Deliberation verdict
     status: TrackBStatus = "confirmed"
     signal_id: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     resolution: str | None = None
     severity: str | None = None
 
-    # Reviewer-facing narrative, lifted from the model's integrity story
     what_happened: str | None = None
     why_it_matters: str | None = None
     honest_alternative: str | None = None
     reason_cleared: str | None = None
 
-    # Speech evidence — often the whole case, and previously unreachable
     audio_summary: str | None = None
     notable_phrases: list[str] = Field(default_factory=list)
     speech_language: str | None = None
 
-    # Typing evidence behind this card, when a keystroke finding covers it.
     keystroke_evidence: KeystrokeEvidence | None = None
 
-    # A paste happens at an instant; the 1s window it carries exists only so a
-    # clip can be cut around it. The UI shows no duration when this is set,
-    # rather than the invented second.
     is_instantaneous: bool = False
 
     source_types: list[str] = Field(default_factory=list)
@@ -223,14 +173,6 @@ class CorrelatedPatternEvent(ContractModel):
 
 
 class CorrelatedPatternMoment(ContractModel):
-    """One of the moments a correlated pattern is built from.
-
-    A correlation fires because two things coincided, and the two are rarely
-    in the same chunk — the median pattern spans 82 seconds and the longest
-    nearly eight minutes. One clip over the whole range is not evidence a
-    reviewer can watch, so each constituent moment gets its own.
-    """
-
     label: str
     time_range_ms: tuple[int, int]
     clip_ref: ClipRef | None = None
@@ -240,8 +182,6 @@ class CorrelatedPatternProof(ContractModel):
     time_range_ms: tuple[int, int]
     video_seek_ms: int | None = None
     clip_ref: ClipRef | None = None
-    # One entry per moment the pattern correlates. ``clip_ref`` above is the
-    # first of these, kept so a caller that wants a single clip still has one.
     moments: list[CorrelatedPatternMoment] = Field(default_factory=list)
     machine_facts: list[dict[str, object]] = Field(default_factory=list)
     perception_window_ids: list[str] = Field(default_factory=list)
@@ -262,16 +202,8 @@ class CorrelatedPatternEntry(ContractModel):
     question_number: int | None = None
     section_title: str | None = None
 
-    # ``rationale`` above is the detector's own note — internal event names and
-    # millisecond thresholds ("suspicious_eye_movement co-occurs with
-    # external_help (within 8000ms)"). This is the same statement written for
-    # the reviewer who has never seen those names.
     explanation: str | None = None
 
-    # Text evidence, mirroring the field names TrackBObservationCard uses so a
-    # UI can render a correlated row with the same components. Often the whole
-    # case: a correlation between a phone and speech is only meaningful once
-    # you can read what was said.
     audio_summary: str | None = None
     notable_phrases: list[str] = Field(default_factory=list)
     speech_language: str | None = None
@@ -417,22 +349,14 @@ class EvidenceBundle(ContractModel):
     candidate_id: str
     assessment_id: str
     produced_at: str
+    trust_score: int = Field(default=100, ge=0, le=100)
     behavior_summary: BehaviorSummarySection
     recommendation: RecommendationSection
     confidence: ConfidenceSection
     key_reasons: KeyReasonsSection
-    # integrity_stories and episode_analysis are deliberately not emitted. Both
-    # remain internal stages: the stories supply every confirmed card's title,
-    # window, clip and prose, and the episode inventory is the reference every
-    # signal must cite to survive validation. Neither is read by the reviewer
-    # UI, so shipping them only inflated the bundle by roughly a fifth.
     track_b_observations: list[TrackBObservationCard] = Field(default_factory=list)
     detected_signals: DetectedSignalsSection
     correlated_patterns: CorrelatedPatternsSection
-    # evidence_timeline and unknown_panel are not emitted: the timeline was a
-    # verbatim second copy of the cards, and the unknown intervals already ship
-    # as the cards with status "unknown". The unknown panel is still built
-    # internally because those cards are derived from it.
     smart_student_notes: SmartStudentNotesSection
     contextual_events: ContextualEventsSection
     reviewer_action: ReviewerActionSection

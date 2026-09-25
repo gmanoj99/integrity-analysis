@@ -1,5 +1,3 @@
-"""Scope 4 deliberation engine."""
-
 from __future__ import annotations
 
 import hashlib
@@ -24,6 +22,13 @@ from ..prompts.deliberation import (
     DELIBERATION_SYSTEM_PROMPT,
     TRACK2_CAPS,
     build_deliberation_user_prompt,
+)
+from ..adapters.logging import StructuredLogger
+from ..scoring.trust_score import (
+    combine_trust_score,
+    fallback_behaviours,
+    parse_holistic_score,
+    parse_trust_behaviours,
 )
 from ..scoring.unified_score import compute_unified_score
 from .episodes import (
@@ -69,6 +74,10 @@ class DeliberationInput:
 
 
 LlmCallable = Callable[[str], str]
+
+CLEARED_LEDGER_MAX_ROWS = 30
+
+_logger = StructuredLogger()
 
 
 def _fmt_ms(ms: int) -> str:
@@ -139,13 +148,10 @@ def _looks_like_clear_prose(text: str) -> bool:
     )
 
 
-# The three verdicts the model may state; anything else falls back to the
-# signal-derived default rather than being trusted.
 RECOMMENDATION_CATEGORIES = frozenset({"CLEAR", "REVIEW_REQUIRED", "STRONG_EVIDENCE"})
 
 
 def _parse_confidence(value: Any, default: float | None = 0.5) -> float | None:
-    """Match TS: only numeric confidence is trusted; strings default."""
     if isinstance(value, (int, float)):
         return max(0.0, min(1.0, float(value)))
     return default
@@ -175,18 +181,11 @@ def parse_raw_output(text: str) -> dict[str, Any]:
     return parsed
 
 
-# A recorder may attach its own evidence to a machine fact — this project's
-# WINDOW_BLUR carries a full-page screenshot as a base64 data URI — and
-# json.dumps of that detail put 1.26 MB of image bytes into a single prompt,
-# 98% of its total. The model cannot read an image through a data URI, so the
-# bytes buy nothing; what deliberation needs is that a snapshot exists.
 _MEDIA_URI_RE = re.compile(r"^\s*data:([^;,]*)[;,]", re.I)
 _MAX_DETAIL_VALUE_CHARS = 500
 
 
 def _prompt_safe_detail(detail: Any) -> dict[str, Any]:
-    """Fact detail with media payloads and oversized strings elided."""
-
     raw = dict(detail) if isinstance(detail, Mapping) else {}
     safe: dict[str, Any] = {}
     for key, value in raw.items():
@@ -272,14 +271,6 @@ def _serialize_correlated_signals(bundle: Any | None) -> str:
 
 
 def _serialize_sections(master_timeline: Any | None) -> str:
-    """The section each moment falls in, so the summary can name it.
-
-    Without this the model has no idea sections exist and can only describe a
-    session as one undifferentiated block. Question numbers are not published
-    here — they are resolved downstream from the activity timeline and are
-    absent on sittings with no submission events.
-    """
-
     sections = _attr(master_timeline, "sections", default=[]) or []
     if not sections:
         return "SECTIONS:\n  (none — treat the session as a single block)"
@@ -293,17 +284,6 @@ def _serialize_sections(master_timeline: Any | None) -> str:
 
 
 def _build_citation_inventory(machine_facts_bundle: Any, perception_bundle: Any) -> str:
-    """Machine-fact kinds only.
-
-    This block used to restate every observation field as its own
-    ``windowId.fieldPath=value`` line — the same values the perception block
-    already prints — while counting *lines* against a cap of 80. At ~9 lines per
-    window that made only the first nine windows citable, so on a 67-minute
-    session everything after minute four was evidence the model could see and
-    was forbidden to cite. The perception block is now the single citable
-    surface and teaches the format itself.
-    """
-
     facts = getattr(machine_facts_bundle, "facts", []) or []
     kinds = sorted({_fact_kind(f) for f in facts if _fact_kind(f)})
     return "\n".join(
@@ -316,8 +296,6 @@ def _build_citation_inventory(machine_facts_bundle: Any, perception_bundle: Any)
 
 
 def _observation_row(raw: Mapping[str, Any]) -> tuple[list[str], str | None]:
-    """The non-UNKNOWN fields of one observation, plus any speech summary."""
-
     values: list[str] = []
     for path in FIELD_PATH_RESOLVERS:
         node: Any = raw
@@ -339,15 +317,6 @@ def _observation_row(raw: Mapping[str, Any]) -> tuple[list[str], str | None]:
 
 
 def _serialize_perception_observations(perception_bundle: Any) -> str:
-    """Every window of the session, grouped, with per-event rows.
-
-    Serialising ``observations[:80]`` in time order silently truncated the
-    evidence to the first 80 events — the opening half hour of a 67-minute
-    session — so nothing later could be judged or cited. There is no row cap
-    here: a window costs a line, an event costs a line, and 183 windows come to
-    roughly 60k characters, which is one ordinary call.
-    """
-
     observations = getattr(perception_bundle, "observations", []) or []
     windows = getattr(perception_bundle, "windows", []) or []
 
@@ -513,15 +482,6 @@ def _signal_window_from_citations(
     observations_by_window_id: dict[str, list[Any]],
     episode_by_id: dict[str, Any],
 ) -> tuple[int, int] | None:
-    """When the signal happened, from the windows it cites.
-
-    The model does not state a time; the citations carry it. Prefer the
-    perception windows the signal actually cited, and fall back to its
-    episode. Returning None disables the in-window fact check rather than
-    guessing a span — a citation is only rejected on positive evidence that
-    the fact belongs elsewhere.
-    """
-
     spans: list[tuple[int, int]] = []
     for ref in signal.observations_cited:
         window_id = str(ref).split(".")[0]
@@ -538,9 +498,36 @@ def _signal_window_from_citations(
     return (min(s for s, _ in spans), max(e for _, e in spans))
 
 
+def _serialize_cleared_ledger(video_findings: list[Any] | None) -> str:
+    cleared = [
+        finding
+        for finding in (video_findings or [])
+        if str(_attr(finding, "verdict", default="")) == "cleared"
+    ]
+    if not cleared:
+        return "CLEARED LEDGER:\n  (none)"
+    lines = [
+        "CLEARED LEDGER:",
+        "  Already adjudicated as non-violations. Do NOT emit signals for these.",
+        "  Assign residual trust impact only, per the TRUST ASSESSMENT rubric.",
+    ]
+    for finding in cleared[:CLEARED_LEDGER_MAX_ROWS]:
+        window = _attr(finding, "timestamp_window_ms", "timestampWindowMs", default=(0, 0))
+        start, end = int(window[0]), int(window[1])
+        occurrences = _attr(finding, "occurrence_count", "occurrenceCount") or 1
+        lines.append(
+            f"  - {_attr(finding, 'event_type', 'eventType', default='unknown')} "
+            f"[{_fmt_ms(start)}-{_fmt_ms(end)}] "
+            f"reason={_attr(finding, 'data_gaps', 'dataGaps', default='unspecified')} "
+            f"occurrences={occurrences} | {_attr(finding, 'reasoning', default='')}"
+        )
+    if len(cleared) > CLEARED_LEDGER_MAX_ROWS:
+        lines.append(f"  … and {len(cleared) - CLEARED_LEDGER_MAX_ROWS} more cleared episode(s).")
+    return "\n".join(lines)
+
+
 def build_deliberation_prompt(input_data: DeliberationInput) -> str:
     """Serialize the deterministic Scope 1–3.5 inventory for one Pro call."""
-
     episode_inventory = build_episode_inventory(
         correlated_signals=input_data.correlated_signals,
         video_findings=input_data.video_findings,
@@ -559,6 +546,7 @@ def build_deliberation_prompt(input_data: DeliberationInput) -> str:
             input_data.correlated_signals
         ),
         sections_text=_serialize_sections(input_data.master_timeline),
+        cleared_ledger_text=_serialize_cleared_ledger(input_data.video_findings),
     )
     return f"{DELIBERATION_SYSTEM_PROMPT}\n\n{user_prompt}"
 
@@ -569,7 +557,6 @@ def build_deliberation_bundle(
     llm_call: LlmCallable | None = None,
     raw_llm_text: str | None = None,
 ) -> DeliberationBundle:
-    """Build Scope 4 bundle. Pass ``raw_llm_text`` or ``llm_call`` for tests."""
     correlated_hash = "none"
     if input_data.correlated_signals is not None:
         bundle = input_data.correlated_signals
@@ -613,17 +600,12 @@ def build_deliberation_bundle(
 
     facts = getattr(input_data.machine_facts_bundle, "facts", []) or []
     machine_fact_kinds_present = {_fact_kind(f) for f in facts}
-    # Where each kind actually occurred, so a citation can be checked against
-    # the signal's own moment rather than against the session's vocabulary.
     fact_windows_by_kind: dict[str, list[tuple[int, int]]] = {}
     for fact in facts:
         start = int(_attr(fact, "start_offset_ms", "startOffsetMs", default=0) or 0)
         end = int(_attr(fact, "end_offset_ms", "endOffsetMs", default=start) or start)
         fact_windows_by_kind.setdefault(_fact_kind(fact), []).append((start, max(start, end)))
     observations = getattr(input_data.perception_bundle, "observations", []) or []
-    # A window holds one observation per perception event, so a citation has to
-    # be checked against all of them: the phone the model cited may sit on a
-    # different row than the glance that happened to come first in the chunk.
     observations_by_window_id: dict[str, list[Any]] = {}
     for observation in observations:
         window_id = _attr(observation, "window_id", "windowId")
@@ -685,9 +667,6 @@ def build_deliberation_bundle(
             continue
         trimmed = RawCandidateSignal(
             signal_type=raw_sig.signal_type,
-            # Not necessarily the id the model wrote: a reference that names no
-            # inventory episode is repaired from the windows the signal cites
-            # when exactly one episode owns them all.
             episode_ref=episode_ref.resolved_episode_ref or raw_sig.episode_ref,
             hypothesis_honest=raw_sig.hypothesis_honest,
             hypothesis_assisted=raw_sig.hypothesis_assisted,
@@ -696,18 +675,11 @@ def build_deliberation_bundle(
             innocent_explanation_considered=raw_sig.innocent_explanation_considered,
             why_rejected=raw_sig.why_rejected,
             machine_facts_cited=raw_sig.machine_facts_cited,
-            # Only citations that actually resolved: falling back to the raw
-            # list would readmit the ones validation just dropped, and
-            # CitationRule below is the floor that must stay honest.
             observations_cited=value_result.kept_observations_cited,
             baseline_metrics_cited=raw_sig.baseline_metrics_cited,
             integrity_story=raw_sig.integrity_story,
         )
         if not validate_citation_rule(trimmed):
-            # "Zero citations" alone cannot distinguish a model that cited
-            # nothing from one whose every citation failed to resolve — the
-            # second is usually a value mismatch, not a hallucination, and only
-            # the drop reasons say which.
             dropped = value_result.dropped_citations or []
             if dropped:
                 reason = (
@@ -747,14 +719,6 @@ def build_deliberation_bundle(
                 )
             )
             continue
-        # No corroboration gate: the model decides whether an episode is a
-        # signal. ConjunctionRule used to require >=2 citations across >=2 of
-        # {machine_facts, observations, baseline}, which a camera-only session
-        # can never satisfy — it has no evidential machine facts and an empty
-        # baseline — so every such signal had to match a hand-maintained
-        # whitelist of "definitive" field combinations or be discarded. The
-        # rules kept below are the anti-hallucination ones: they check that the
-        # model cited something and that what it cited exists.
         signal_window = _signal_window_from_citations(
             trimmed, observations_by_window_id, episode_by_id
         )
@@ -840,8 +804,6 @@ def build_deliberation_bundle(
         )
         or 1.0
     )
-    # The model states the verdict; compute_unified_score checks the surviving
-    # signals can carry it and downgrades with a reason when they cannot.
     raw_category = _pick_raw_text(raw, "category", "category", "")
     model_category = raw_category if raw_category in RECOMMENDATION_CATEGORIES else None
     model_confidence = raw.get("confidence")
@@ -861,6 +823,31 @@ def build_deliberation_bundle(
     final_confidence = unified.confidence
     capture_cap = unified.capture_quality_cap_applied
     informative_cap = unified.informative_content_cap_applied
+    trust_behaviours = parse_trust_behaviours(raw)
+    if not trust_behaviours:
+        trust_behaviours = fallback_behaviours(validated)
+        if trust_behaviours:
+            _logger.warning(
+                "integrity-review: no model trust assessment, scoring from resolutions",
+                candidate_id=input_data.candidate_id,
+                behaviours=len(trust_behaviours),
+            )
+    trust_score = combine_trust_score(
+        trust_behaviours,
+        usable_window_ratio=usable_ratio,
+    )
+    holistic = parse_holistic_score(raw)
+    _logger.info(
+        "integrity-review: trust score computed",
+        candidate_id=input_data.candidate_id,
+        trust_score=trust_score,
+        model_holistic_score=holistic,
+        behaviours=[
+            {"label": b.label, "impact": b.impact, "disposition": b.disposition}
+            for b in trust_behaviours
+        ],
+        usable_window_ratio=round(usable_ratio, 3),
+    )
 
     downgraded = unified.category_guard_applied or (
         raw_category == "STRONG_EVIDENCE" and category != "STRONG_EVIDENCE"
@@ -877,11 +864,6 @@ def build_deliberation_bundle(
     recommendation_text = _pick_raw_text(raw, "recommendation", "recommendation")
     reasoning = _pick_raw_text(raw, "reasoning", "reasoning")
     if category != "CLEAR":
-        # `reasoning` and `recommendation` are verdict statements, so reassuring
-        # prose there contradicts a non-CLEAR category and is replaced. The
-        # summary is narrative: when nothing was substantiated, "nothing was
-        # found" is the accurate thing to tell the reviewer, and blanking it is
-        # what left the top card empty. Keep it and add the caveat instead.
         if _looks_like_clear_prose(behavior_summary):
             behavior_summary = (
                 f"{behavior_summary.rstrip('. ')}. Some parts of the session could not be "
@@ -928,4 +910,5 @@ def build_deliberation_bundle(
         capture_quality_cap_applied=capture_cap,
         informative_content_ratio=informative_ratio,
         informative_content_cap_applied=informative_cap,
+        trust_score=trust_score,
     )

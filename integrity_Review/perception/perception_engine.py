@@ -1,5 +1,3 @@
-"""Scope 2 camera perception bundle assembly."""
-
 from __future__ import annotations
 
 import hashlib
@@ -34,9 +32,6 @@ from .chunk_job import perception_chunk_cache_key
 
 PERCEPTION_VERSION = PERCEPTION_PROMPT_VERSION
 
-# A combined chunk is one file holding both signals, so it is camera evidence
-# as much as it is screen evidence: both selectors claim it, and the single
-# perception job for it fills both caches under the same chunk id.
 CAMERA_ARTIFACT_TYPES = frozenset({"video", "screenCamera"})
 
 
@@ -230,12 +225,6 @@ async def assemble_perception_from_streamed_chunks(
                     )
                 ]
             )
-            # One observation per perception event, each keeping the event's own
-            # start/end. Merging them into a single per-window row kept only the
-            # first event's span and OR-ed every other event's attributes onto
-            # it, so a 3s glance and a 40s phone-in-hand in the same chunk came
-            # out as one 3s row claiming both — and every duration downstream was
-            # computed from that. The window id still groups them for citations.
             all_observations.extend(
                 obs.model_copy(update={"window_id": window.window_id}) for obs in raw_obs
             )
@@ -258,8 +247,6 @@ async def assemble_perception_from_streamed_chunks(
         all_observations.append(build_coverage_hole_observation(window, reason))
 
     all_observations.sort(key=lambda item: item.start_ms)
-    # Coverage counts windows, not observations: a chunk yielding five events is
-    # still one window of video, and counting rows would push the ratio over 1.
     covered_windows = sum(1 for window in windows if window.video_available)
     unknown_windows = len(windows) - covered_windows
     coverage_ratio = covered_windows / len(windows) if windows else 0.0
@@ -333,9 +320,6 @@ def compute_analysed_video_duration_ms(
     bundle: PerceptionBundle,
     chunk_spans: list[VideoChunkSpan],
 ) -> int:
-    # Analysed footage is measured over windows, not observations: an
-    # observation now spans one event, so unioning observation spans would
-    # report "time something happened" rather than time reviewed.
     covered = [
         (window.start_ms, window.end_ms)
         for window in bundle.windows

@@ -1,5 +1,3 @@
-"""Scope 5 evidence bundle assembly (offset ClipRefs + mediaIndex; no physical clips)."""
-
 from __future__ import annotations
 
 import re
@@ -26,7 +24,7 @@ from ..contracts.evidence_bundle import (
     ReviewerActionSection,
     TrackBObservationCard,
 )
-from ..duck_helpers import attr
+from ..duck_helpers import attr, fact_kind
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
 from .clips import (
     evidence_stream_for_event,
@@ -73,8 +71,6 @@ _TITLE_OVERRIDES = {
 
 _STATUS_RANK = {"confirmed": 0, "cleared": 1, "context": 2, "unknown": 3}
 
-# Speech classes that carry the integrity meaning; preferred when several
-# observations overlap one card's window.
 _INTEGRITY_SPEECH = {
     "asking_for_answer",
     "receiving_dictation",
@@ -90,15 +86,6 @@ def _humanize(event_type: str) -> str:
 
 
 def _titled(event_type: str) -> str:
-    """The card's title — the event, named, and nothing else.
-
-    This used to append "· {n}s", which the UI then rendered beside its own
-    duration column: the same number twice, once inside a string it could not
-    format or suppress. Duration travels in ``duration_ms``; instantaneous
-    events (a paste carries a synthetic 1s window) have nothing worth showing
-    there at all, which the title must not pre-empt.
-    """
-
     return _humanize(event_type)
 
 
@@ -109,13 +96,6 @@ def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
 def _speech_in_window(
     perception_bundle: Any, window: tuple[int, int]
 ) -> tuple[str | None, list[str], str | None]:
-    """Best speech evidence overlapping ``window``.
-
-    The conversation summary is frequently the whole case ("an off-camera voice
-    instructs the candidate to select an option"), and until now it existed only
-    inside the perception bundle, which the review UI never receives.
-    """
-
     observations = attr(perception_bundle, "observations", default=[]) or []
     best: tuple[int, Any] | None = None
     for observation in observations:
@@ -142,9 +122,6 @@ def _speech_in_window(
     )
 
 
-# Events that happen at a point in time. Their findings carry a synthetic
-# window (keystroke.py gives a paste 1s) purely so a clip can be cut around
-# them, so the duration is an artefact and must not be shown as one.
 INSTANTANEOUS_EVENT_TYPES = frozenset({
     "external_paste",
     "mass_paste",
@@ -155,8 +132,6 @@ INSTANTANEOUS_EVENT_TYPES = frozenset({
 
 @dataclass(frozen=True)
 class AttachedFindings:
-    """The deterministic findings covering one card's window."""
-
     refs: list[str]
     detail: str | None
     strength: Any
@@ -170,15 +145,6 @@ def _inserted_chars(finding: Any) -> int:
 
 
 def _keystroke_evidence(finding: Any) -> KeystrokeEvidence | None:
-    """The pasted text behind a finding, from whichever proof carries it.
-
-    A paste seen in the screen recording lands in ``screen_proof``, not
-    ``keystroke_proof`` — different detector, different contract, same thing
-    as far as a reviewer is concerned. Reading only the keystroke side meant
-    that on a session with no rrweb telemetry the card said "external paste"
-    and showed nothing, while the OCR'd code sat in the bundle unused.
-    """
-
     if finding is None:
         return None
     proof = attr(finding, "keystroke_proof", "keystrokeProof")
@@ -198,15 +164,12 @@ def _keystroke_evidence(finding: Any) -> KeystrokeEvidence | None:
         keystrokes_in_window=attr(proof, "keystrokes_in_window", "keystrokesInWindow"),
         field_id=attr(proof, "field_id", "fieldId"),
     )
-    # An all-empty proof is noise on the card, not evidence.
     if not evidence.model_dump(exclude_none=True):
         return None
     return evidence
 
 
 def _usable_findings(track_b_findings: list[Any]) -> list[tuple[Any, str, tuple[int, int]]]:
-    """Deterministic findings worth surfacing, with their window."""
-
     usable: list[tuple[Any, str, tuple[int, int]]] = []
     for finding in track_b_findings:
         event_type = str(attr(finding, "event_type", "eventType", default=""))
@@ -234,21 +197,6 @@ def build_curated_track_b_observations(
     unknown_panel: Any = None,
     sections: list[Any] | None = None,
 ) -> list[TrackBObservationCard]:
-    """Build the one reviewer-facing card list, carrying the model's verdict.
-
-    Previously this returned only the deterministic ``flagged`` findings, so
-    the UI rendered the pre-deliberation layer and every model judgement was
-    discarded: on one test session four of five cards were interactions the
-    model had explicitly cleared as invigilator or technical staff.
-
-    Now each signal the model emitted becomes a ``confirmed`` card, each
-    episode it dismissed becomes a ``cleared`` card carrying the reason,
-    permitted speech becomes ``context`` and coverage gaps become ``unknown``.
-    Deterministic findings no longer create cards of their own — they attach to
-    whichever card covers their window as ``evidence_refs``, which also
-    collapses the duplicate cards two findings on one window used to produce.
-    """
-
     stories_by_signal = {story.signal_id: story for story in integrity_stories.stories}
     signals_by_id = {s.signal_id: s for s in deliberation_bundle.validated_signals}
     findings = _usable_findings(track_b_findings)
@@ -256,8 +204,6 @@ def build_curated_track_b_observations(
     cards: list[TrackBObservationCard] = []
 
     def attached(window: tuple[int, int]) -> AttachedFindings:
-        """Deterministic findings covering ``window``."""
-
         matched = [(f, et) for f, et, w in findings if _overlaps(w, window)]
         refs = sorted({et for _, et in matched})
         detail = next(
@@ -276,8 +222,6 @@ def build_curated_track_b_observations(
             ),
             None,
         )
-        # The largest paste when several land in one window: a reviewer
-        # scanning a card wants the strongest instance, not the first.
         keystroke = _keystroke_evidence(
             max(
                 (
@@ -299,7 +243,6 @@ def build_curated_track_b_observations(
             ),
         )
 
-    # 1. Confirmed — one card per signal the model actually emitted.
     for signal in deliberation_bundle.validated_signals:
         story = stories_by_signal.get(signal.signal_id)
         window = (
@@ -352,7 +295,6 @@ def build_curated_track_b_observations(
         )
         claimed.append((t0, t1))
 
-    # 2. Cleared — episodes the model considered and dismissed, with its reason.
     for episode in deliberation_bundle.episode_analysis:
         if episode.will_emit_signal and any(
             sid in signals_by_id for sid in episode.emitted_signal_ids
@@ -397,7 +339,6 @@ def build_curated_track_b_observations(
         )
         claimed.append((t0, t1))
 
-    # 3. Context — permitted interactions (invigilator, technical help).
     for event in attr(contextual_events, "events", default=[]) or []:
         t0 = int(event.timestamp_window_ms[0])
         t1 = int(event.timestamp_window_ms[1])
@@ -424,7 +365,6 @@ def build_curated_track_b_observations(
             )
         )
 
-    # 4. Unknown — coverage gaps, so "not analysed" never reads as "nothing happened".
     for interval in attr(unknown_panel, "intervals", default=[]) or []:
         t0, t1 = int(interval.start_ms), int(interval.end_ms)
         duration_ms = max(0, int(interval.duration_ms))
@@ -441,8 +381,6 @@ def build_curated_track_b_observations(
             )
         )
 
-    # 5. Any flagged finding no episode or signal covers still gets a card,
-    #    so removing the old one-card-per-finding path cannot lose evidence.
     for finding, event_type, window in findings:
         if any(_overlaps(window, c) for c in claimed):
             continue
@@ -609,10 +547,6 @@ def _build_detected_signals(
     )
 
 
-# Internal event names as a reviewer would say them. The correlation
-# detectors write their rationale in the vocabulary of the layer below —
-# "suspicious_eye_movement co-occurs with external_help" — which is accurate
-# and unreadable to the HR reviewer this report is for.
 CORRELATION_TERMS: dict[str, str] = {
     "suspicious_eye_movement": "the candidate looked away from the screen",
     "external_help": "another person was interacting with the candidate",
@@ -637,8 +571,6 @@ def _term(token: str) -> str:
     return CORRELATION_TERMS.get(token, token.replace("_", " "))
 
 
-# Every rationale the detectors emit matches one of these shapes; the fallback
-# below covers any that does not, so a new detector degrades rather than leaks.
 CORRELATION_RATIONALE_TEMPLATES: tuple[tuple[re.Pattern[str], Any], ...] = (
     (
         re.compile(r"^(\w+) co-occurs with speech classified (\w+) \(within (\d+)ms\)$"),
@@ -668,8 +600,6 @@ CORRELATION_RATIONALE_TEMPLATES: tuple[tuple[re.Pattern[str], Any], ...] = (
 
 
 def humanize_correlation_rationale(rationale: str, label: str) -> str | None:
-    """The detector's rationale, restated for a non-technical reviewer."""
-
     text = (rationale or "").strip()
     if not text:
         return None
@@ -677,9 +607,6 @@ def humanize_correlation_rationale(rationale: str, label: str) -> str | None:
         match = pattern.match(text)
         if match:
             return render(match)
-    # Unknown shape: substitute the terms we do know and leave the rest. The
-    # label already carries the meaning, so a partial rewrite is safer than
-    # printing raw detector vocabulary.
     out = text
     for token, phrase in CORRELATION_TERMS.items():
         out = out.replace(token, phrase)
@@ -692,9 +619,6 @@ CORRELATION_MOMENT_CLIP_MS = 20_000
 MAX_CORRELATION_MOMENTS = 4
 
 
-# Correlation factors by the stream their primary signal lives on, used when a
-# pattern's refs do not say. A factor naming a phone, a person or speech is the
-# webcam; one naming blur, focus, a tab or a paste is the screen recording.
 CORRELATION_FACTOR_STREAM_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("gaze", "phone", "second_person", "speech", "whisper", "camera_absent",
       "face_absent", "av_mismatch", "interact", "video_overlap"), "video"),
@@ -704,18 +628,6 @@ CORRELATION_FACTOR_STREAM_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
 
 
 def _correlation_stream(factor_id: str, evidence_refs: list[str]) -> str | None:
-    """The recording that holds this pattern's evidence.
-
-    With both a camera and a screen recording in the index, the clip resolver
-    took whichever chunk it reached first, so a second-person or phone finding
-    was handed a screen capture — and one pattern could resolve half its
-    moments to camera and half to screen.
-
-    The refs are real provenance and are trusted first: perception
-    observations are the camera, screen and machine-fact refs the screen
-    recording. The factor name is only a fallback for refs that say neither.
-    """
-
     refs = [str(r) for r in evidence_refs]
     if any(r.startswith("perception:") for r in refs):
         return "video"
@@ -727,18 +639,83 @@ def _correlation_stream(factor_id: str, evidence_refs: list[str]) -> str | None:
     return None
 
 
+MOMENT_LABELS: dict[str, str] = {
+    "suspicious_eye_movement": "Looked away",
+    "external_help": "Second person",
+    "phone_usage": "Phone visible",
+    "no_candidate": "Not in frame",
+    "left_examination_area": "Left the desk",
+    "discussing_solution_audio": "Answer discussion",
+    "whisper_or_dictation": "Dictation heard",
+    "off_camera_voice_coaching": "Off-camera coaching",
+    "secondary_workspace_visible": "Second screen",
+    "external_resource_open": "Non-exam app",
+    "external_paste": "Paste",
+    "mass_paste": "Paste",
+    "screen_external_paste": "Paste",
+}
+
+
+def _moment_label(kind: str, start_ms: int) -> str:
+    phrase = MOMENT_LABELS.get(kind) or (
+        kind.replace("_", " ").strip().capitalize() or "Evidence"
+    )
+    return f"{phrase} · {_fmt_clock(start_ms)}"
+
+
 def _correlation_moments(
     evidence_refs: list[str],
     time_range: tuple[int, int],
     media_index: list,
     prefer_evidence_type: str | None = None,
+    members: list[Any] | None = None,
 ) -> list[CorrelatedPatternMoment]:
-    """One clip per distinct moment the pattern is built from.
-
-    Perception refs carry their window bounds in the id itself
-    (``perception:w=w_1919983_1979983+w_1979983_2039986``), so the moments are
-    recoverable without going back to the perception bundle.
-    """
+    if members:
+        spans = [
+            (
+                int(attr(m, "t_ms", "tMs", default=0) or 0),
+                int(attr(m, "end_ms", "endMs", default=0) or 0),
+                str(attr(m, "kind", default="")),
+            )
+            for m in members
+        ]
+        spans = [(t, max(t, e), k) for t, e, k in spans]
+        overlap_start = max(t for t, _, _ in spans)
+        overlap_end = min(e for _, e, _ in spans)
+        moments: list[CorrelatedPatternMoment] = []
+        seen: dict[tuple, CorrelatedPatternMoment] = {}
+        for start, end, kind in spans:
+            if overlap_end > overlap_start:
+                anchor = min(max(start, overlap_start), end)
+            else:
+                anchor = start if start >= overlap_start else max(start, end - 1)
+            span_ms = min(max(end - anchor, 1), CORRELATION_MOMENT_CLIP_MS)
+            clip = resolve_offset_clip_ref(
+                event_ms=anchor,
+                duration_ms=span_ms,
+                media_index=media_index,
+                single_segment=True,
+                prefer_evidence_type=prefer_evidence_type,  # type: ignore[arg-type]
+            )
+            label = _moment_label(kind, anchor)
+            key = (
+                tuple((s.chunk_id, s.seek_to_ms) for s in clip.segments)
+                if clip
+                else ("none", anchor)
+            )
+            existing = seen.get(key)
+            if existing is not None:
+                merged = f"{existing.label.rsplit(' · ', 1)[0]} + {label}"
+                seen[key] = existing.model_copy(update={"label": merged})
+                continue
+            moment = CorrelatedPatternMoment(
+                label=label,
+                time_range_ms=(anchor, max(anchor, end)),
+                clip_ref=clip,
+            )
+            seen[key] = moment
+        if seen:
+            return list(seen.values())[:MAX_CORRELATION_MOMENTS]
 
     windows = sorted({
         (int(a), int(b))
@@ -748,7 +725,6 @@ def _correlation_moments(
     if not windows:
         windows = [ (int(time_range[0]), int(time_range[1])) ]
 
-    # Adjacent perception windows are one continuous moment, not two.
     merged: list[list[int]] = []
     for start, end in windows:
         if merged and start <= merged[-1][1]:
@@ -783,8 +759,6 @@ def _fmt_clock(ms: int) -> str:
 def _correlation_machine_facts(
     evidence_refs: list[str], machine_facts_bundle: Any
 ) -> tuple[list[dict], KeystrokeEvidence | None]:
-    """Facts a pattern cites by id, plus any paste text among them."""
-
     wanted = {
         str(ref).split(":", 1)[1]
         for ref in evidence_refs
@@ -819,14 +793,6 @@ def _build_correlated_pattern(
     perception_bundle: Any,
     machine_facts_bundle: Any,
 ) -> CorrelatedPatternEntry:
-    """One correlated pattern, with the evidence a reviewer needs to judge it.
-
-    Until now these carried a factor id, a score and a detector note and
-    nothing a reviewer could open — no clip, no audio, no pasted text. A
-    correlation is often the strongest thing in the bundle precisely because
-    it spans two modalities, so it was the finding hardest to check.
-    """
-
     c = contribution
     label = str(attr(c, "label", default=attr(c, "factor_id", "factorId", default="")))
     rationale = str(attr(c, "rationale", default="") or "")
@@ -840,6 +806,7 @@ def _build_correlated_pattern(
         prefer_evidence_type=_correlation_stream(
             str(attr(c, "factor_id", "factorId", default="")), refs
         ),
+        members=list(attr(c, "member_events", "memberEvents", default=[]) or []),
     )
     facts, paste_evidence = _correlation_machine_facts(refs, machine_facts_bundle)
     audio_summary, phrases, language = _speech_in_window(perception_bundle, time_range)  # type: ignore[arg-type]
@@ -877,8 +844,6 @@ def _build_correlated_pattern(
             moments=moments,
             machine_facts=facts,
             perception_window_ids=window_ids,
-            # No clip resolved anywhere: the pattern rests on telemetry alone,
-            # which the UI has to say rather than offering a dead play button.
             telemetry_only=primary is None,
         ),
         question_number=attr(c, "question_number", "questionNumber"),
@@ -958,6 +923,7 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         candidate_id=input_data.candidate_id,
         assessment_id=input_data.assessment_id,
         produced_at=datetime.now(timezone.utc).isoformat(),
+        trust_score=bundle.trust_score,
         behavior_summary=build_behavior_summary(bundle),
         recommendation=build_recommendation_section(bundle),
         confidence=_build_confidence_section(

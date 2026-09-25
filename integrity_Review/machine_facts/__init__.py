@@ -1,5 +1,3 @@
-"""Scope 1 machine facts pipeline."""
-
 from .build import build_machine_facts
 from .chunk_analysis import ACTIVITY_GAP_THRESHOLD_MS, analyze_keystroke_chunk
 from .contracts import (

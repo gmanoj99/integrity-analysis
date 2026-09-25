@@ -1,5 +1,3 @@
-"""M0 video findings derivation — port of videoFindingsDerivation.ts (trackb-v9)."""
-
 from __future__ import annotations
 
 from ..contracts.perception import PerceptionBundle, PerceptionWindow

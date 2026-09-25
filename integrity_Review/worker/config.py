@@ -1,5 +1,3 @@
-"""Worker environment configuration."""
-
 from __future__ import annotations
 
 import os
@@ -53,9 +51,6 @@ class WorkerConfig:
     presign_expires_in_seconds: int = 3_600
     custom_ai_logs_group_name: str = "custom-ai-logs"
     custom_ai_logs_stream_name: str = Stage.BETA.value
-    # Matches the request queue's redrive maxReceiveCount so the worker reports
-    # a FAILURE on the last delivery instead of letting the message vanish into
-    # the DLQ with the review left IN_PROGRESS forever.
     max_receive_count: int = 5
     log_level: str = "INFO"
 
@@ -92,8 +87,6 @@ class WorkerConfig:
         )
 
     def as_log_fields(self) -> dict[str, object]:
-        """Startup snapshot of the resolved configuration; never secrets."""
-
         return {
             "stage": self.stage.value,
             "aws_region": self.aws_region,

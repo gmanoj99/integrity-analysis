@@ -1,5 +1,3 @@
-"""One recommendation score over deliberation signals and Track B findings."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -67,8 +65,6 @@ class UnifiedScore:
     corroborated_signal_ids: list[str]
     capture_quality_cap_applied: bool
     informative_content_cap_applied: bool
-    # Set when the model's own category could not be supported by the signals
-    # that survived validation, with the reason a reviewer needs to see.
     category_guard_applied: bool = False
     category_guard_reason: str | None = None
     model_category: RecommendationCategory | None = None
@@ -118,9 +114,6 @@ def _track_b_source(finding: MergedFinding) -> EvidenceSourceType:
 
 
 def _is_scoreable_track_b(finding: MergedFinding) -> bool:
-    # No gaze duration floor: a 12-second stare at a phone off-frame is not
-    # less real than a 16-second one, and the model now weighs the duration it
-    # can actually see.
     return finding.score_weight > 0
 
 
@@ -142,13 +135,6 @@ def _track_b_confidence(finding: MergedFinding) -> float:
 
 
 def _cited_window_ids(signals: list[ValidatedSignal]) -> set[str]:
-    """Distinct perception windows the signals rest on.
-
-    Three signals quoting one window are one moment seen three ways, not three
-    independent sources — counting them as three is what let a single staff
-    interaction reach STRONG_EVIDENCE at 0.95.
-    """
-
     windows: set[str] = set()
     for signal in signals:
         for citation in signal.observations_cited:
@@ -167,15 +153,6 @@ def compute_unified_score(
     model_category: RecommendationCategory | None = None,
     model_confidence: float | None = None,
 ) -> UnifiedScore:
-    """Merge duplicate evidence and settle the reviewer-facing recommendation.
-
-    The model states the category and confidence; this function checks that the
-    signals which survived validation can carry them, and downgrades with a
-    stated reason when they cannot. It no longer decides the verdict itself —
-    a rule cannot tell an invigilator from an accomplice, and one that tried
-    both cleared real cheating and escalated innocent sessions.
-    """
-
     active = [signal for signal in validated_signals if signal.resolution != "honest"]
     reconciled = reconcile_findings([], track_b_findings)
     scoreable = [
@@ -212,8 +189,6 @@ def compute_unified_score(
     has_concern = bool(active or scoreable)
     has_assisted = any(signal.resolution == "assisted" for signal in active)
     has_corroboration = bool(corroborated)
-    # Independent means "a second thing was seen", so a second modality or a
-    # second moment both count; three citations of one window do not.
     independent_evidence = max(len(source_types), len(_cited_window_ids(active)))
 
     default_confidence = (

@@ -1,19 +1,3 @@
-"""Backend staged-payload contract and mapping onto the pipeline's ReviewRequest.
-
-The backend builds the authoritative manifest and stages it at
-``{s3_media_prefix}/media/ai_integrity_review_requests/{review_id}.json``
-(``topin_beta`` or ``topin_prod``); the worker only consumes it.
-
-Robustness policy for this boundary: the payload is produced by another service
-from S3 listings and DB rows, so individual fields are routinely absent for
-real attempts — a candidate who never opened a section has no
-``exam_attempt_id`` and no ``start_datetime``, and a chunk can be missing its
-duration. None of that is a reason to fail a whole review, so the models below
-accept nulls and unknown keys, and :func:`build_review_request` drops only the
-individual items it cannot use, reporting what it dropped so the worker can log
-it. Only a payload with no usable identity at all is rejected.
-"""
-
 from __future__ import annotations
 
 import json
@@ -57,12 +41,6 @@ MAX_REPORTED_WARNINGS = 20
 
 
 class StagedModel(ContractModel):
-    """Inbound half of the contract: ignore unknown keys instead of failing.
-
-    ``extra="forbid"`` is right for the pipeline's own contracts, but here it
-    would turn any additive change on the backend into a review-wide failure.
-    """
-
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,
@@ -78,8 +56,6 @@ def _blank_to_none(value: Any) -> Any:
 
 
 def _optional_int(value: Any) -> int | None:
-    """Accept ints, numeric strings and floats; treat anything else as absent."""
-
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -145,9 +121,6 @@ class ActivityLog(StagedModel):
     @field_validator("metadata", mode="before")
     @classmethod
     def _coerce_missing_metadata(cls, value: Any) -> Any:
-        """The backend emits ``null`` for logs that carry no extra detail, and
-        older rows store the JSON as a string."""
-
         if value is None:
             return {}
         if isinstance(value, str):
@@ -188,8 +161,6 @@ class SectionSpec(StagedModel):
 
     @property
     def attempted(self) -> bool:
-        """A section the candidate actually opened has an attempt and a start."""
-
         return self.exam_attempt_id is not None and self.start_datetime is not None
 
 
@@ -227,8 +198,6 @@ class SqsRequestEnvelope(StagedModel):
 
 @dataclass(slots=True)
 class PayloadSummary:
-    """Enterprise log line for one staged payload: shape, not content."""
-
     review_id: str
     org_assess_id: str
     attempt_user_id: str
@@ -284,8 +253,6 @@ class NormalizedReviewRequest:
 
 
 def _chunk_id_stem(s3_key: str) -> str:
-    """Derive the legacy filename-stem chunk id token from an S3 key's filename."""
-
     name = PurePosixPath(s3_key).name
     stem = _STEM_SUFFIX_RE.sub("", name)
     stem = _STEM_EXT_RE.sub("", stem)
@@ -293,8 +260,6 @@ def _chunk_id_stem(s3_key: str) -> str:
 
 
 def _epoch_from_key(s3_key: str) -> int | None:
-    """Recover the upload epoch from the filename when the manifest omits it."""
-
     match = _STEM_EPOCH_RE.search(_chunk_id_stem(s3_key))
     return int(match.group(1)) if match else None
 
@@ -309,8 +274,6 @@ class _UsableChunk:
 
 
 def _usable_chunks(manifest: Manifest, summary: PayloadSummary) -> list[_UsableChunk]:
-    """Keep every chunk we can actually fetch and place on the timeline."""
-
     usable: list[_UsableChunk] = []
     seen_keys: set[str] = set()
     unknown_media_types: set[str] = set()
@@ -344,8 +307,6 @@ def _usable_chunks(manifest: Manifest, summary: PayloadSummary) -> list[_UsableC
                 exam_attempt_id=chunk.exam_attempt_id,
                 s3_key=chunk.s3_key,
                 epoch_ms=epoch_ms,
-                # EvidenceChunkRef rejects negatives; a bad duration is better
-                # treated as unknown than as a review-wide validation error.
                 duration_ms=(
                     chunk.duration_ms
                     if chunk.duration_ms is not None and chunk.duration_ms >= 0
@@ -365,11 +326,6 @@ def _build_refs(
     chunks: list[_UsableChunk],
     section_by_attempt: dict[str, SectionSpec],
 ) -> list[EvidenceChunkRef]:
-    # The worker regenerates chunk_id from the S3 key rather than trusting one
-    # from the backend manifest; this is only safe because
-    # timeline.master_timeline.parse_chunk_id re-derives epoch/duration from a
-    # "{epoch}__{duration}" filename stem, so every filename in the manifest
-    # must keep carrying that suffix.
     ordered = sorted(chunks, key=lambda item: item.epoch_ms)
     refs: list[EvidenceChunkRef] = []
     for index, chunk in enumerate(ordered):
@@ -384,9 +340,6 @@ def _build_refs(
             else chunk.exam_attempt_id
         )
         stem = _chunk_id_stem(chunk.s3_key)
-        # The prefix follows the chunk's own evidence type, not the manifest
-        # it was grouped into, so a combined chunk stays recognisable as
-        # "screenCamera-…" everywhere downstream — including on the wire.
         refs.append(
             EvidenceChunkRef(
                 evidence_type=chunk.evidence_type,
@@ -415,14 +368,6 @@ def _resolve_exam_mode(
     rrweb_chunks: list[EvidenceChunkRef],
     summary: PayloadSummary,
 ) -> ExamMode:
-    """A review runs in exactly one exam mode; pick one instead of failing.
-
-    Both kinds of key can legitimately sit under one candidate's session prefix
-    (a client upgrade mid-assessment, or a re-attempt on a newer build). The
-    mode with more chunks is the one that describes the attempt; the other is
-    ignored so the review still produces a report.
-    """
-
     if not (screen_chunks and rrweb_chunks):
         return ExamMode.SCREEN if screen_chunks else ExamMode.RRWEB if rrweb_chunks else ExamMode.NONE
 
@@ -445,13 +390,6 @@ def _resolve_exam_mode(
 def _usable_sections(
     sections: list[SectionSpec], summary: PayloadSummary
 ) -> list[SectionSpec]:
-    """Normalize the section specs, keeping unattempted sections as context.
-
-    An unattempted section has no ``exam_attempt_id``/``start_datetime``; it is
-    kept so evidence and labels can still be attributed to it, and the timeline
-    builder simply produces no span for it.
-    """
-
     usable: list[SectionSpec] = []
     for index, spec in enumerate(sections):
         section_id = spec.section_id or spec.exam_id
@@ -491,8 +429,6 @@ def _parses_as_datetime(value: str) -> bool:
 def _usable_activity_logs(
     logs: list[ActivityLog], summary: PayloadSummary
 ) -> list[dict[str, Any]]:
-    """Drop only the individual log rows the timeline cannot place in time."""
-
     usable: list[dict[str, Any]] = []
     for index, log in enumerate(logs):
         if not log.creation_datetime or not _parses_as_datetime(log.creation_datetime):
@@ -530,13 +466,6 @@ def _section_by_attempt(
 
 
 def build_review_request(payload: StagedReviewPayload) -> NormalizedReviewRequest:
-    """Map a staged backend payload onto the pipeline's ``ReviewRequest``.
-
-    Never raises for partial data: unusable individual chunks, sections and
-    activity logs are dropped and counted in the returned summary so the caller
-    can log exactly what was degraded.
-    """
-
     summary = PayloadSummary(
         review_id=payload.review_id,
         org_assess_id=payload.org_assess_id,
@@ -569,8 +498,6 @@ def build_review_request(payload: StagedReviewPayload) -> NormalizedReviewReques
 
     summary.exam_mode = exam_mode.value
     summary.camera_chunks = len(video_chunks)
-    # The screen manifest holds both plain and combined chunks; report them
-    # separately so cost and coverage stay attributable per recording style.
     summary.screen_camera_chunks = sum(
         1 for chunk in screen_chunks if chunk.evidence_type == EvidenceType.SCREEN_CAMERA
     )

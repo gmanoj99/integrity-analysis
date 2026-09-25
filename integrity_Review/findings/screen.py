@@ -1,5 +1,3 @@
-"""Deterministic screen findings from screen perception observations."""
-
 from __future__ import annotations
 
 import re
@@ -83,29 +81,14 @@ def _fact_from_obs(
     )
 
 
-# How far either side of a paste an external source still counts as its
-# origin. A tab switched to, a doc opened or an assistant window seen a minute
-# before the paste is plausibly where the text came from; nothing visible at
-# all is not evidence of anything.
 EXTERNAL_SOURCE_PAD_MS = 60_000
 
-# Foreground apps that are not the exam. Only meaningful when the exam UI is
-# not the thing on screen — the exam's own coding IDE is an exam_ide.
 NON_EXAM_FOREGROUND = frozenset({"browser", "notes", "ai_chat", "messaging"})
 
 
 def _external_source_near(
     observations: list[ScreenObservation], start_ms: int, end_ms: int
 ) -> bool:
-    """Whether anything on screen near this window could be an outside source.
-
-    A paste cue on its own says text arrived, not where it came from. The
-    candidate copying her own code inside the exam IDE looks identical to a
-    paste from a website, and calling both "external" turns ordinary work into
-    a cheating accusation. So the external claim has to be earned by something
-    visible: a non-exam site or app, an AI assistant, or a second workspace.
-    """
-
     lo = start_ms - EXTERNAL_SOURCE_PAD_MS
     hi = end_ms + EXTERNAL_SOURCE_PAD_MS
     for obs in observations:
@@ -176,11 +159,6 @@ def derive_screen_findings(
             if event_type == "screen_external_paste" and not _external_source_near(
                 observations, start.start_ms, end.end_ms
             ):
-                # Text arrived, but nothing on screen says where from. The
-                # candidate reusing her own code inside the exam IDE produces
-                # exactly this picture, so it is recorded for the model to
-                # judge — not asserted as an external paste, which is an
-                # accusation the evidence does not support.
                 emit_type, emit_kind = "screen_paste", MachineFactKind.SCREEN_PASTE
                 verdict = "provisional"
                 severity = "low"

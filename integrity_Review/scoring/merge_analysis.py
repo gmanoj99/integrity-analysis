@@ -1,5 +1,3 @@
-"""Track B merge and composite scoring (TS mergeAnalysis.ts parity; cohort nudge excluded)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, replace

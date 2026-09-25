@@ -1,5 +1,3 @@
-"""Injected I/O boundaries used by the pure pipeline."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

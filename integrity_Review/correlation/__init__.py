@@ -1,5 +1,3 @@
-"""Behavioral correlation engine (Scope 3.5)."""
-
 from .build import derive_correlated_signals
 from .contracts import (
     CORRELATED_SCORE_CAP,

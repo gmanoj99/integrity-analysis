@@ -1,5 +1,3 @@
-"""Duck-typed attribute access for Pydantic models, SimpleNamespace, and dicts."""
-
 from __future__ import annotations
 
 from typing import Any, Mapping

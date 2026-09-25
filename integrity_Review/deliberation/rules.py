@@ -1,5 +1,3 @@
-"""Scope 4 deterministic deliberation rules."""
-
 from __future__ import annotations
 
 import hashlib
@@ -17,11 +15,7 @@ from ..contracts.deliberation import (
 )
 from ..duck_helpers import attr, mapping_view
 from ..prompts.deliberation import DELIBERATION_PROMPT_VERSION
-
-# Names the model deliberation actually runs on (prompts.shared.DELIBERATION_MODEL).
-# It also feeds the artifact hash, so a model swap must be reflected here or
-# two different runs share a provenance fingerprint.
-DELIBERATION_MODEL_VERSION = "gemini-3.8-flash"
+from ..prompts.shared import DELIBERATION_MODEL_VERSION
 
 _DELIBERATION_ARTIFACT_HASH = hashlib.sha256(
     f"{DELIBERATION_MODEL_VERSION}|{DELIBERATION_PROMPT_VERSION}".encode()
@@ -107,9 +101,6 @@ FIELD_PATH_RESOLVERS: dict[str, str] = {
     "audio.speechStyle": "audio.speechStyle",
     "audio.speechOverlapWithLips": "audio.speechOverlapWithLips",
     "audio.codeMixing": "audio.codeMixing",
-    # Advertised verbatim by engine._build_citation_inventory, so it has to
-    # resolve here too. Free text, so the value comparison below will often
-    # not match exactly; that only drops the citation, never the signal.
     "audio.conversationSummaryEn": "audio.conversationSummaryEn",
     "people.secondPersonPosition": "people.secondPersonPosition",
     "people.secondPersonLooksLike": "people.secondPersonLooksLike",
@@ -197,14 +188,7 @@ class RuleResult:
     ok: bool
     reason: str | None = None
     kept_observations_cited: list[str] | None = None
-    # Why each citation was discarded, in "<citation> — <reason>" form. Dropping
-    # a citation silently and returning ok=True made the loss surface later as
-    # CitationRule's "Zero citations", which reads as "the model cited nothing"
-    # when the truth is often "everything it cited failed to resolve". Reviewers
-    # cannot tell a hallucinated citation from a value mismatch without this.
     dropped_citations: list[str] | None = None
-    # The inventory episode this signal resolved to, which is not always the id
-    # the model wrote — see resolve_episode_ref_from_windows.
     resolved_episode_ref: str | None = None
 
 
@@ -260,17 +244,6 @@ def resolve_episode_ref_from_windows(
     signal: RawCandidateSignal,
     episodes_by_id: dict[str, RawEpisodeAnalysis],
 ) -> str | None:
-    """Recover the episode a signal means from the windows it cites.
-
-    Models that did not write the inventory's exact id — inventing ``model_ep1``
-    is the common shape — still cite real windows, and a window belongs to at
-    most one adjudicated episode. When exactly one episode owns every cited
-    window the reference is unambiguous, so repairing it keeps a well-evidenced
-    judgement that an id mismatch would otherwise discard whole. Anything
-    ambiguous stays rejected: guessing between episodes would attach a signal to
-    the wrong moment, which is worse than losing it.
-    """
-
     cited_windows = {
         parsed[0]
         for parsed in (parse_observation_citation(ref) for ref in signal.observations_cited)
@@ -336,15 +309,11 @@ def validate_value_resolving_citations(
             return RuleResult(False, f'Cited window "{window_id}" does not exist')
         if isinstance(window_observations, (list, tuple)):
             candidates = list(window_observations)
-        else:  # a single observation, as older callers and tests pass
+        else:
             candidates = [window_observations]
         if field_path not in FIELD_PATH_RESOLVERS:
-            # Drop the citation rather than the signal: one stray field path
-            # must not discard an otherwise well-evidenced judgement.
             dropped.append(f"{ref} — field path is not citable")
             continue
-        # A window holds one observation per event, so the citation resolves if
-        # ANY of them carries the value; it is UNKNOWN only when all of them are.
         observed = [
             _get_nested(observation, FIELD_PATH_RESOLVERS[field_path])
             for observation in candidates
@@ -463,9 +432,6 @@ def validate_conjunction_rule(
     return True
 
 
-# How far from a signal's own window a machine fact still counts as evidence
-# for it. Mirrors FACT_WINDOW_PAD_MS in the bundle's section builders, which
-# already uses this tolerance to decide which facts belong to which card.
 FACT_CITATION_PAD_MS = 15_000
 
 
@@ -480,11 +446,6 @@ def validate_no_fact_invention(
     for kind in signal.machine_facts_cited:
         if kind not in machine_fact_kinds_present:
             return False
-        # Presence of the kind anywhere in the session is not evidence that it
-        # happened *here*. One real SCREEN_EXTERNAL_PASTE at 54:05 was letting
-        # the model assert pastes at 27:00 and 39:00 too, with full confidence
-        # and nothing to contradict it, because only the vocabulary was
-        # checked. A cited kind must have an instance near the signal.
         if fact_windows_by_kind is None or signal_window_ms is None:
             continue
         spans = fact_windows_by_kind.get(kind)
@@ -547,10 +508,6 @@ def compute_informative_content_ratio(
         for w in windows
         if attr(w, "phase") == "live_exam" and attr(w, "window_id", "windowId")
     }
-    # Judge a window, not each event within it. One observation now covers one
-    # event, so a chunk whose gaze row fills a single field would read as
-    # uninformative on its own and drag the capture-quality cap down with it —
-    # the window is informative if its events together describe it.
     by_window: dict[str, list[Any]] = {}
     for observation in observations:
         if not attr(observation, "video_available", "videoAvailable"):

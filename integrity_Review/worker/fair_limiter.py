@@ -1,10 +1,3 @@
-"""Task-global Gemini concurrency limit with an explicit per-review sub-cap.
-
-A single review with many chunks must not starve the other concurrent reviews of
-Gemini slots, so each review gets its own sub-semaphore capped at an explicit
-per-review limit, in addition to acquiring a task-global slot.
-"""
-
 from __future__ import annotations
 
 import asyncio

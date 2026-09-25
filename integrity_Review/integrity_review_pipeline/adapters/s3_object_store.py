@@ -1,5 +1,3 @@
-"""S3-backed implementation of SebLogObjectStore for streaming access to log files."""
-
 from __future__ import annotations
 
 import json
@@ -15,25 +13,12 @@ except ImportError:
 
 
 class S3ObjectStore:
-    """S3 object store with streaming line access for large log files.
-
-    Implements the SebLogObjectStore protocol for accessing SEB log files
-    stored in S3 without loading entire files into memory.
-    """
-
     def __init__(
         self,
         bucket: str,
         region_name: str = "ap-south-1",
         chunk_size: int = 8192,
     ) -> None:
-        """Initialize S3 object store.
-
-        Args:
-            bucket: S3 bucket name
-            region_name: AWS region for the bucket
-            chunk_size: Size of chunks to read when streaming (default 8KB)
-        """
         if boto3 is None:
             raise RuntimeError(
                 "boto3 is required for S3 access. Install with: pip install boto3"
@@ -51,10 +36,6 @@ class S3ObjectStore:
         )
 
     def list_keys(self, prefix: str) -> Iterator[str]:
-        """List all object keys under the given prefix.
-
-        Uses pagination to handle buckets with many objects.
-        """
         paginator = self._client.get_paginator("list_objects_v2")
 
         for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
@@ -62,11 +43,6 @@ class S3ObjectStore:
                 yield obj["Key"]
 
     def iter_lines(self, key: str) -> Iterator[str]:
-        """Stream lines from an S3 object without loading it entirely into memory.
-
-        Reads the object in chunks and yields complete lines. Handles UTF-8
-        decoding and proper line splitting.
-        """
         response = self._client.get_object(Bucket=self._bucket, Key=key)
         body = response["Body"]
 
@@ -94,7 +70,6 @@ class S3ObjectStore:
             body.close()
 
     def get_json(self, key: str) -> dict[str, Any]:
-        """Load and parse a JSON object from S3."""
         response = self._client.get_object(Bucket=self._bucket, Key=key)
         body = response["Body"]
         try:
@@ -104,23 +79,15 @@ class S3ObjectStore:
             body.close()
 
     def get_object_size(self, key: str) -> int:
-        """Get the size of an object in bytes."""
         response = self._client.head_object(Bucket=self._bucket, Key=key)
         return response["ContentLength"]
 
 
 class LocalFileStore:
-    """Local filesystem implementation of SebLogObjectStore for testing.
-
-    Useful for running the pipeline against local log files during development.
-    """
-
     def __init__(self, base_path: str) -> None:
-        """Initialize with a base path for local files."""
         self._base_path = base_path.rstrip("/")
 
     def list_keys(self, prefix: str) -> Iterator[str]:
-        """List all files under the prefix directory."""
         import os
 
         full_path = os.path.join(self._base_path, prefix.lstrip("/"))
@@ -135,7 +102,6 @@ class LocalFileStore:
                 yield relative_path
 
     def iter_lines(self, key: str) -> Iterator[str]:
-        """Read lines from a local file."""
         import os
 
         full_path = os.path.join(self._base_path, key.lstrip("/"))
@@ -145,7 +111,6 @@ class LocalFileStore:
                 yield line.rstrip("\n\r")
 
     def get_json(self, key: str) -> dict[str, Any]:
-        """Load and parse a local JSON file."""
         import os
 
         full_path = os.path.join(self._base_path, key.lstrip("/"))
@@ -154,7 +119,6 @@ class LocalFileStore:
             return json.load(f)
 
     def get_object_size(self, key: str) -> int:
-        """Get the size of a local file in bytes."""
         import os
 
         full_path = os.path.join(self._base_path, key.lstrip("/"))

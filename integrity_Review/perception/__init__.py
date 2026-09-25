@@ -1,5 +1,3 @@
-"""Camera and screen perception layer."""
-
 from .chunk_job import (
     ScreenCameraChunkAnalysis,
     analyze_camera_chunk,

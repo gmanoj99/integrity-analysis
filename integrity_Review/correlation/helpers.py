@@ -1,5 +1,3 @@
-"""Shared correlation helpers — port of correlationEngine.ts utilities."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -40,10 +38,6 @@ WHISPER_DICTATION_TYPES = {
 AV_MISMATCH_TYPES = {"av_speech_without_lips"}
 CAMERA_ABSENT_TYPES = {"no_candidate", "left_examination_area", "left_seat_body_present"}
 
-# A second person the classifier flagged as helping, and speech the classifier
-# judged to be about the exam itself. ``discussing_solution_audio`` is the only
-# speech event type any classifier emits today, so the class carried in
-# ``detail["speechContentClass"]`` is what separates coaching from chatter.
 SECOND_PERSON_EVENT_TYPES = {"external_help", "multiple_faces"}
 ANSWER_SPEECH_EVENT_TYPES = {"discussing_solution_audio"}
 ANSWER_SPEECH_CLASSES = {
@@ -124,21 +118,10 @@ def perception_episodes_by_kind(timeline: list[TimelineEvent], kind: str) -> lis
 def perception_episodes_by_kinds(
     timeline: list[TimelineEvent], kinds: set[str]
 ) -> list[TimelineEvent]:
-    """``perception_episodes_by_kind`` for a set — one classifier concept often
-    surfaces under more than one event type (a helper beside the candidate is
-    ``external_help``; two faces in frame is ``multiple_faces``)."""
-
     return [e for e in timeline if e.source == "perception_episode" and e.kind in kinds]
 
 
 def is_answer_speech(event: TimelineEvent) -> bool:
-    """Speech the classifier judged to be about the exam's answers.
-
-    The timeline carries one speech event type, so the episode's
-    ``speechContentClass`` is what separates coaching from a room where people
-    happen to be talking. An episode without a class is not assumed to qualify.
-    """
-
     return event.detail.get("speechContentClass") in ANSWER_SPEECH_CLASSES
 
 

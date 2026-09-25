@@ -1,5 +1,3 @@
-"""Google Gemini client adapter."""
-
 from __future__ import annotations
 
 import asyncio
@@ -10,10 +8,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# The concurrency limiter caps how many Gemini calls run at once, not the
-# provider's requests-per-minute quota, so 429/RESOURCE_EXHAUSTED can still
-# happen under load. Retry a bounded number of times with jittered backoff
-# instead of failing the whole review on the first rate-limit response.
 _RATE_LIMIT_STATUS = "RESOURCE_EXHAUSTED"
 _RATE_LIMIT_HTTP_CODE = 429
 _MAX_RETRY_ATTEMPTS = 3
@@ -30,6 +24,18 @@ def _is_rate_limited(error: Exception) -> bool:
 def _backoff_seconds(attempt: int) -> float:
     capped_delay = min(_BASE_BACKOFF_SECONDS * (2**attempt), _MAX_BACKOFF_SECONDS)
     return random.uniform(0, capped_delay)
+
+
+def _incomplete_reason(response: Any) -> str | None:
+    blocked = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    if blocked is not None:
+        return f"prompt_blocked:{getattr(blocked, 'name', blocked)}"
+    candidates = getattr(response, "candidates", None) or []
+    finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+    if finish is None:
+        return None
+    name = str(getattr(finish, "name", finish))
+    return None if name == "STOP" else name
 
 
 def _usage_from_response(response: Any) -> dict[str, int]:
@@ -78,5 +84,14 @@ class GoogleGeminiClient:
                 await asyncio.sleep(delay)
                 attempt += 1
                 continue
+            usage = _usage_from_response(response)
+            reason = _incomplete_reason(response)
+            if reason is not None:
+                logger.warning(
+                    "gemini stopped early: model=%s finishReason=%s completion_tk=%d",
+                    model,
+                    reason,
+                    usage["completion_tk"],
+                )
             text = response.text or "{}"
-            return {"text": text, "usage": _usage_from_response(response)}
+            return {"text": text, "usage": usage}

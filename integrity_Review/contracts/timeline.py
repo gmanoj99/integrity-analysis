@@ -1,5 +1,3 @@
-"""Timeline contracts shared by analysis stages."""
-
 from typing import Any, Literal
 
 from pydantic import Field
@@ -117,8 +115,6 @@ class TimelineEvent(ContractModel):
 
 
 class TimelineEventRecord(ContractModel):
-    """Optional behavior-timeline rows used to anchor chunk spans."""
-
     timestamp_ms: int
     evidence_type: Literal["video", "keystrokeData", "screenRecording", "client_reported"]
     sequence: int | None = None

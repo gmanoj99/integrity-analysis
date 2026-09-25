@@ -1,5 +1,3 @@
-"""Worker entrypoint: two-slot long-poll loop over the request queue with SIGTERM drain."""
-
 from __future__ import annotations
 
 import asyncio
@@ -21,9 +19,6 @@ from .fair_limiter import FairGeminiLimiter
 from .message_processor import WorkerContext, handle_message
 from .task_protection import TaskProtection
 
-# Worker-scope logger: same single-line JSON shape as the per-review loggers,
-# without a reviewId, so container startup and poll-loop health are searchable
-# in the same log group as the reviews themselves.
 _LOG = StructuredLogger(scope="worker")
 
 
@@ -65,8 +60,6 @@ def _build_context(config: WorkerConfig) -> WorkerContext:
 
 
 async def _prune(in_flight: set[asyncio.Task[None]]) -> set[asyncio.Task[None]]:
-    """Drop finished tasks, surfacing any that raised despite the processor's own safety net."""
-
     if not in_flight:
         return in_flight
     done, pending = await asyncio.wait(in_flight, timeout=0)
@@ -122,8 +115,6 @@ async def _poll_loop(ctx: WorkerContext, config: WorkerConfig, stopping: asyncio
                 in_flight.add(asyncio.ensure_future(handle_message(ctx, message)))
             continue
 
-        # An empty long-poll is the normal idle state; report it periodically so
-        # the log shows a live, healthy consumer instead of going silent.
         now = time.monotonic()
         if now - last_idle_report >= 300:
             _LOG.info(
@@ -167,8 +158,6 @@ def _on_signal(sig: signal.Signals, stopping: asyncio.Event):
 
 
 def main() -> None:
-    # Logging is configured before anything else so even a bad environment
-    # produces one clear line instead of an unformatted traceback.
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
     try:
         config = WorkerConfig.from_env()

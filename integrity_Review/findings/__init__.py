@@ -1,5 +1,3 @@
-"""Deterministic evidence findings (Track B rename)."""
-
 from .contracts import (
     FINDINGS_LOGIC_VERSION,
     EvidenceFinding,

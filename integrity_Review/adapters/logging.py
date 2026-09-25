@@ -1,10 +1,3 @@
-"""Structured, per-review JSON logger.
-
-Every event is one line: a stable human-readable message followed by a JSON
-object of fields. CloudWatch Logs Insights can filter on the message and parse
-the JSON, so this is the only logging shape the worker and pipeline use.
-"""
-
 from __future__ import annotations
 
 import json
@@ -16,12 +9,6 @@ LOGGER_NAME = "integrity_review_pipeline"
 
 
 class StructuredLogger:
-    """One instance per review (or per worker scope when ``review_id`` is None).
-
-    ``error=`` may be passed either a string or the exception itself; passing the
-    exception adds ``errorType`` and, with ``exc_info=True``, the traceback.
-    """
-
     __slots__ = ("_context", "_logger", "_review_id")
 
     def __init__(self, review_id: str | None = None, **context: Any) -> None:
@@ -30,8 +17,6 @@ class StructuredLogger:
         self._logger = logging.getLogger(LOGGER_NAME)
 
     def bind(self, **context: Any) -> StructuredLogger:
-        """Return a logger carrying these extra fields on every event."""
-
         return StructuredLogger(self._review_id, **{**self._context, **context})
 
     def _log(self, level: int, message: str, fields: dict[str, Any]) -> None:
@@ -70,12 +55,6 @@ class StructuredLogger:
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """Send single-line, timestamped logs to stdout for the ECS awslogs driver.
-
-    ``force=True`` replaces any handler a dependency installed at import time,
-    which is what otherwise makes container logs disappear or duplicate.
-    """
-
     logging.basicConfig(
         level=level.upper(),
         stream=sys.stdout,
@@ -83,6 +62,5 @@ def configure_logging(level: str = "INFO") -> None:
         datefmt="%Y-%m-%dT%H:%M:%S%z",
         force=True,
     )
-    # These are chatty at INFO and drown out the pipeline's own events.
     for noisy in ("boto3", "botocore", "urllib3", "httpx", "httpcore", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

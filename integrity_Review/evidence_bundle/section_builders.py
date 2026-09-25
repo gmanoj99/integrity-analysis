@@ -1,5 +1,3 @@
-"""Scope 5 section builders ported from evidenceBundleService.ts (retained scope only)."""
-
 from __future__ import annotations
 
 import re
@@ -33,8 +31,6 @@ from .clips import evidence_stream_for_event, resolve_offset_clip_ref
 
 LONG_SPAN_MS = 300_000
 OBSERVATION_CLIP_DURATION_MS = 20_000
-# How far from a signal's cited windows a machine fact still counts as
-# corroborating it, and how long a gap ends a burst of telemetry-only facts.
 FACT_WINDOW_PAD_MS = 15_000
 FACT_CLUSTER_GAP_MS = 60_000
 
@@ -58,10 +54,6 @@ SIGNAL_HUMAN_LABELS: dict[str, str] = {
 }
 
 
-# What each concern is called when a non-technical reviewer reads it. The
-# detector names in SIGNAL_HUMAN_LABELS are still right for the signal cards,
-# where they sit beside the evidence; at the top of the page they read as
-# system vocabulary, so the summary uses ordinary words instead.
 SIGNAL_PLAIN_PHRASES: dict[str, str] = {
     "possible_external_consultation": "used a phone or looked something up outside the exam",
     "possible_second_person_involvement": "been helped by another person",
@@ -126,32 +118,24 @@ def _looks_like_clear_prose(text: str) -> bool:
 
 
 NOTHING_FOUND_TEXT = (
-    "No malpractice was found — the candidate completed the exam on their own, with no phone, "
-    "no other person and no outside help seen or heard at any point."
+    "No malpractice was found. The candidate completed the exam on their own, with no phone, "
+    "no other person, and no outside help seen or heard at any point."
 )
 NOTHING_FOUND_UNVERIFIED_TEXT = (
-    "No malpractice was found, but some parts of the session could not be checked clearly."
+    "No malpractice was found, but some parts of the session could not be clearly checked."
 )
 
 
 def _cleared_moments_text(rejected: int) -> str:
-    """One plain sentence for a session where everything looked at was fine.
-
-    Reviewers here are HR staff, so this never names counts of internal
-    objects or how much of the session was analysable — only, in words, that
-    the questionable moments turned out to be ordinary.
-    """
-
     if rejected <= 0:
         return NOTHING_FOUND_TEXT
     if rejected == 1:
         return (
-            "No malpractice was found — one moment was checked closely "
-            "and it had a normal explanation."
+            "No malpractice was found. One moment was checked closely, "
+            "and it had a normal explanation."     
         )
     return (
-        f"No malpractice was found — {rejected} moments were checked closely "
-        "and each had a normal explanation."
+        f"No malpractice was found. {rejected} moments were checked closely, and each had a normal explanation."
     )
 
 
@@ -165,11 +149,6 @@ def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection
     if verbatim and active and not _looks_like_clear_prose(verbatim):
         return BehaviorSummarySection(text=verbatim)
     if not active:
-        # Nothing survived adjudication, so the honest thing to tell the
-        # reviewer is that nothing was found — not the old placeholder, which
-        # rendered as a near-empty card. `reasoning` and `recommendation` are
-        # written for the verdict panel and read as jargon at the top of the
-        # page, so they are no longer promoted into the summary.
         if verbatim and not _looks_like_clear_prose(verbatim):
             return BehaviorSummarySection(text=verbatim[:500])
         return BehaviorSummarySection(text=NOTHING_FOUND_UNVERIFIED_TEXT)
@@ -181,17 +160,11 @@ def build_behavior_summary(bundle: DeliberationBundle) -> BehaviorSummarySection
     ]
     if told:
         return BehaviorSummarySection(text=" ".join(told)[:600])
-    # Last resort: the model gave us no narrative at all. The old fallback
-    # printed a raw citation string ("w_479874_539881.people.secondPersonVisible
-    # =yes") and detector names straight to the reviewer. Describe the concerns
-    # in the words a non-technical reviewer would use instead.
     phrases = sorted({plain_signal_phrase(s.signal_type) for s in active})
     if len(phrases) == 1:
         concerns = phrases[0]
     else:
         concerns = f"{', '.join(phrases[:-1])} and {phrases[-1]}"
-    # Both leads take a past participle, which is why SIGNAL_PLAIN_PHRASES is
-    # written in that form.
     lead = (
         "The candidate was found to have"
         if disposition_prefix(active) == "Confirmed"
@@ -229,7 +202,7 @@ def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSe
         recommendation_text = (bundle.recommendation.recommendation or "").strip()
         if not recommendation_text or _looks_like_clear_prose(recommendation_text):
             recommendation_text = (
-                "Review recommended — an independently derived finding warrants human judgment."
+                "Review recommended. Independently derived signals needs human judgment."
             )
         return RecommendationSection(
             category=bundle.recommendation.category,
@@ -255,13 +228,10 @@ def build_recommendation_section(bundle: DeliberationBundle) -> RecommendationSe
         else f"{'A concern' if len(active) == 1 else str(len(active)) + ' concerns'} — "
         f"{disposition.lower()}: {labels}."
     )
-    # Prefer what the model actually wrote. The two fixed strings below replaced
-    # its recommendation on every non-clear review, so a reviewer read the same
-    # sentence whether the evidence was a dictated answer or a glance.
     recommendation = bundle.recommendation.recommendation.strip() or (
-        "Escalate for review — strong corroborated evidence from multiple independent sources."
+        "Escalate for review, strong corroborated evidence from multiple independent sources."
         if bundle.recommendation.category == "STRONG_EVIDENCE"
-        else "Review recommended — a behaviour of concern warrants human judgment."
+        else "Review recommended. Assessment requires human judgment."
     )
     reasoning = bundle.recommendation.reasoning.strip() or reasoning
     return RecommendationSection(
@@ -312,14 +282,6 @@ def _get_nested_value(obs: Any, path: str) -> Any:
 
 
 def _observation_for_cite(perception_bundle: Any, cite: str) -> Any | None:
-    """The observation a citation actually refers to.
-
-    A window holds one observation per perception event, so returning the first
-    row in the window would time the signal by whichever event happened to come
-    first — a 3s glance standing in for the 40s phone the citation names. Prefer
-    the row where the cited field really carries the cited value.
-    """
-
     parsed = parse_observation_citation(cite)
     window_id = parsed[0] if parsed else cite.split(".")[0]
     field_path = parsed[1] if parsed else None
@@ -363,11 +325,6 @@ def signal_time_span(
 
     facts = attr(machine_facts_bundle, "facts", default=[]) or []
     cited = [f for f in facts if fact_kind(f) in signal.machine_facts_cited]
-    # A cited kind like MCQ_ANSWER_SELECTED fires throughout the exam, so
-    # matching on kind alone stretches the span from the first occurrence to the
-    # last — the whole session — and drags the clip anchor with it. The facts
-    # that corroborate a signal are the ones near the windows it actually cites,
-    # the same rule _resolve_story_machine_facts already applies.
     if observations:
         obs_start = min(int(attr(o, "start_ms", "startMs", default=0) or 0) for o in observations)
         obs_end = max(int(attr(o, "end_ms", "endMs", default=0) or 0) for o in observations)
@@ -377,8 +334,6 @@ def signal_time_span(
             if obs_start - FACT_WINDOW_PAD_MS <= fact_start_ms(f) <= obs_end + FACT_WINDOW_PAD_MS
         ]
     else:
-        # Telemetry-only signal: no window to anchor to, so keep the first
-        # contiguous burst rather than every occurrence in the session.
         facts_used = []
         for fact in sorted(cited, key=fact_start_ms):
             if facts_used and fact_start_ms(fact) - fact_start_ms(facts_used[-1]) > FACT_CLUSTER_GAP_MS:
@@ -491,12 +446,6 @@ def resolve_section_id(
     media_index: list[MediaIndexEntry],
     sections: list[Any] | None = None,
 ) -> str | None:
-    """Resolve the single section a signal belongs to.
-
-    Tries the anchoring chunk's section first (deterministic, immune to clock
-    skew), then falls back to bracketing the signal's midpoint against media
-    chunks and finally against canonical session sections.
-    """
     if clip_ref is not None and clip_ref.segments:
         anchor_chunk_id = clip_ref.segments[0].chunk_id
         for entry in media_index:
@@ -577,10 +526,6 @@ def build_integrity_stories(
             time_range_ms,
             raw_story.proof_anchors.machine_fact_kinds,
         )
-        # ``time_range_ms`` is the episode's narrative span — minutes of context
-        # the reviewer does not need to watch. The proof clip is the evidence
-        # window itself, held to one chunk so the card offers a single clip
-        # sitting on the moment rather than a run of consecutive chunks.
         evidence_start = int(span["start_ms"])
         evidence_end = int(span["end_ms"])
         clip_ref = (

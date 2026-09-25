@@ -1,5 +1,3 @@
-"""Shared video derivation core — config, episodes, helpers."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,8 +22,6 @@ DERIVATION_CONFIG = {
     "EPISODE_MAX_GAP_SEC": 22,
     "face": {"IGNORE_BELOW_SEC": 3, "SUSTAINED_SEC": 30, "PROLONGED_SEC": 120},
     "secondPerson": {"MIN_SEC": 3, "ADJACENT_SUSTAINED_SEC": 30},
-    # ANCHOR_MIN_EPISODES retired with trackb-v10: gaze is adjudicated by the
-    # model, not gated on an episode count here.
     "gaze": {"SEGMENT_MERGE_GAP_SEC": 45},
     "phone": {"MIN_SEC": 3},
     "audioWearable": {"MIN_SEC": 3},
@@ -85,8 +81,6 @@ def build_episodes(
         episodes.append(
             Episode(
                 observations=list(cur),
-                # Several events in one chunk share a window id; a repeated id
-                # would double up in evidence refs and proof anchors.
                 window_ids=list(dict.fromkeys(o.window_id for o in cur)),
                 t0=min(o.start_ms for o in cur),
                 t1=max(o.end_ms for o in cur),

@@ -1,5 +1,3 @@
-"""End-to-end in-memory integrity review pipeline."""
-
 from __future__ import annotations
 
 import asyncio
@@ -27,8 +25,8 @@ from .perception import (
     process_perception_chunk_job,
 )
 from .perception.perception_engine import compute_perception_version_hash
+from .prompts import DELIBERATION_MODEL_VERSION
 from .prompts.deliberation import DELIBERATION_PROMPT_VERSION
-from .prompts.shared import DELIBERATION_MODEL
 from .timeline import build_master_timeline
 
 DELIBERATION_ATTEMPTS = 2
@@ -43,7 +41,6 @@ def _chunk_map(request: ReviewRequest) -> dict[str, Any]:
 
 
 def _job_evidence_type(evidence_type: EvidenceType) -> str:
-    
     if evidence_type == EvidenceType.VIDEO:
         return "video"
     if evidence_type == EvidenceType.SCREEN_CAMERA:
@@ -84,13 +81,6 @@ async def _perception_jobs(
 
 
 def _video_windows(observations: list[PerceptionObservation]) -> list[VideoObservationWindow]:
-    """One baseline window per perception window.
-
-    ``usable_window_ratio`` divides these by the window count, so emitting one
-    row per event would count an event-dense chunk several times over. The
-    highest-confidence observation stands for its window.
-    """
-
     best_by_window: dict[str, PerceptionObservation] = {}
     for observation in observations:
         current = best_by_window.get(observation.window_id)
@@ -126,13 +116,6 @@ def _video_windows(observations: list[PerceptionObservation]) -> list[VideoObser
 
 
 async def _load_rrweb(request: ReviewRequest, deps: PipelineDeps) -> list[Any]:
-    """Load the rrweb chunks, skipping any single chunk that cannot be read.
-
-    A missing or corrupt DOM chunk costs coverage for its own time window; it
-    must not cost the whole review, which still has camera evidence and every
-    other chunk.
-    """
-
     manifest = request.evidence.by_type(EvidenceType.KEYSTROKE_DATA)
 
     async def load(chunk: Any) -> tuple[str, int, bytes]:
@@ -195,14 +178,6 @@ def _all_findings(artifacts: BehavioralArtifacts) -> list[EvidenceFinding]:
 async def _run_perception_jobs(
     jobs: list[PerceptionChunkJobPayload], deps: PipelineDeps
 ) -> None:
-    """Run every chunk job, tolerating per-chunk failures.
-
-    Perception runs one Gemini call per chunk. A single unreadable clip or a
-    Gemini error on one chunk leaves that window unknown — which the bundle
-    already models — so the remaining chunks are still analysed instead of the
-    whole review failing.
-    """
-
     if not jobs:
         deps.logger.info("integrity-review: no perception chunks to analyse")
         return
@@ -238,17 +213,10 @@ async def _run_perception_jobs(
 async def _deliberate(
     deliberation_input: DeliberationInput, prompt: str, deps: PipelineDeps
 ) -> Any:
-    """Run the deliberation call, retrying once if the JSON comes back unusable.
-
-    A truncated or non-JSON response is the one Gemini failure mode that a
-    single identical retry usually clears, and it is far cheaper than failing a
-    review that has already paid for every perception call.
-    """
-
     started = time.perf_counter()
     deps.logger.info(
         "integrity-review: deliberation started",
-        model=DELIBERATION_MODEL,
+        model=DELIBERATION_MODEL_VERSION,
         prompt_version=DELIBERATION_PROMPT_VERSION,
         prompt_chars=len(prompt),
     )
@@ -256,13 +224,13 @@ async def _deliberate(
         raw_response = await generate_and_log(
             deps,
             step=STEP_DELIBERATION,
-            model=DELIBERATION_MODEL,
+            model=DELIBERATION_MODEL_VERSION,
             model_version=DELIBERATION_PROMPT_VERSION,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
             config={
                 "temperature": 0,
                 "maxOutputTokens": 16_384,
-                "thinkingConfig": {"thinkingBudget": 1_024},
+                "thinkingConfig": {"thinkingBudget": 2_048},
                 "responseMimeType": "application/json",
             },
             extra_meta={"attempt": attempt},
@@ -278,7 +246,7 @@ async def _deliberate(
             )
             try:
                 return build_deliberation_bundle(deliberation_input, raw_llm_text=raw_text)
-            except ValueError as error:  # JSONDecodeError is a ValueError
+            except ValueError as error:
                 reason = f"unparseable JSON ({error})"
         else:
             reason = "empty response"
@@ -298,8 +266,6 @@ async def run_integrity_review(
     request: ReviewRequest,
     deps: PipelineDeps,
 ) -> EvidenceBundle:
-    """Run one candidate review and return the final validated bundle."""
-
     review_started = time.perf_counter()
     timeline = build_master_timeline(request)
     deps.logger.info(

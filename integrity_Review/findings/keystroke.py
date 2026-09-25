@@ -1,5 +1,3 @@
-"""Deterministic keystroke findings from MachineFacts."""
-
 from __future__ import annotations
 
 from ..machine_facts.contracts import MachineFactsBundle
@@ -9,27 +7,9 @@ from .contracts import EvidenceFinding, EvidenceFindingsResult, KeystrokeProof
 
 PRECURSOR_LOOKBACK_MS = 30_000
 MASS_PASTE_GAP_MS = 60_000
-# 5 chars ≈ 1 word, so chars/second × 12 ≈ words/minute. The old threshold of
-# 30 cps is 360 WPM — well past the ~216 WPM sustained typing record and far
-# past anything reachable while writing code, so in practice it fired only on
-# text that arrived in one blob, which the paste detector already reports.
-# 15 cps ≈ 180 WPM: still faster than any human has sustained on prose, so a
-# false positive stays unlikely, while genuinely superhuman input is caught.
-#
-# This number is reasoned from typing limits, not fitted to our own sessions —
-# the rrweb sittings available when it was set were MCQ-only and carried no
-# sustained typing at all. Re-check it against the avgCharsPerSecond spread on
-# real coding attempts before treating it as settled.
 RAPID_CPS_THRESHOLD = 15
 RAPID_MIN_INSERTION_EVENTS = 3
-# Three quick insertions can be an editor autocompleting or a snippet expanding,
-# and over a few hundred milliseconds that computes to an alarming rate off
-# almost no evidence. A rate only means something once it is sustained.
 RAPID_MIN_DURATION_MS = 2_000
-# A paste happens at an instant. Findings need a non-empty window for a clip to
-# be cut around, so pastes carry this one — it is a handle for the player, not
-# a measurement, and the card marks itself instantaneous so no reviewer is ever
-# shown "1s" as though the paste took a second.
 PASTE_CLIP_WINDOW_MS = 1_000
 
 
@@ -148,11 +128,6 @@ def derive_keystroke_findings(bundle: MachineFactsBundle) -> EvidenceFindingsRes
                 findings.append(
                     _mk(
                         index,
-                        # rrweb cannot see outside the browser, so the only
-                        # trace of an outside source is the candidate leaving
-                        # the exam just before. Without it this is a paste of
-                        # unknown origin — which is what reusing your own code
-                        # looks like — and must not be called external.
                         "external_paste" if corroborated else "paste",
                         fact.start_offset_ms,
                         fact.start_offset_ms + PASTE_CLIP_WINDOW_MS,

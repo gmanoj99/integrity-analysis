@@ -1,5 +1,3 @@
-"""Scope 3 statistical baseline contracts (candidate-only)."""
-
 from __future__ import annotations
 
 from pydantic import Field

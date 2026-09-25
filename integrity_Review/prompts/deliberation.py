@@ -1,10 +1,5 @@
-"""Deliberation prompt text (Scope 4)."""
-
 DELIBERATION_PROMPT_VERSION = "scope4-v17"
 
-# The perception block is no longer capped: truncating it to 80 rows hid the
-# back half of every long session from the model. Only the machine-fact detail
-# rows still need a bound, since one fact can carry a large payload.
 TRACK2_CAPS = {
     "machine_fact_detail_rows": 20,
 }
@@ -91,6 +86,32 @@ typing_cadence_mismatch
 inconsistent_interaction_sequence
   Require at least two modalities showing inconsistency.
 
+=== TRUST ASSESSMENT ===
+
+Separately from the signals, score how much this session's result can be trusted.
+
+`impact` = how much a behaviour, IF it happened as you describe, undermines confidence that the result reflects the candidate's own ability.
+It is NOT how sure you are that it happened — that is `confidence`, which you already record on the signal. A behaviour you are only 40% sure of can still carry impact 0.9; record the doubt in `confidence`, not by shrinking `impact`.
+
+0.85-1.00  The answer plausibly came from outside the candidate.
+           Phone in hand while answering; an answer read aloud; an AI assistant on
+           screen matching the active question; another person supplying content.
+0.55-0.84  Sustained, deliberate access to outside help, payoff unclear.
+           Left the exam area at length; reference material open; a large external
+           paste into an answer field.
+0.25-0.54  Repeated protocol deviation consistent with, but not proof of, outside
+           help. Recurrent off-screen gaze; fullscreen lost; second workspace visible.
+0.05-0.24  A minor deviation the candidate controlled, better explained honestly.
+           Non-exam talking; a phone visible but never handled; occasional glances.
+0.00       Not the candidate's doing, or not a real event. Environment, invigilator
+           or staff, reflections and posters, capture-quality gaps, misclassification.
+
+Rules:
+- Emit ONE behaviour per DISTINCT PATTERN, never one per occurrence. Twelve gaze episodes from one habit are one behaviour; weigh their duration and recurrence inside that single impact value.
+- Cover both emitted signals and the CLEARED LEDGER. A cleared behaviour carries residual impact ONLY when it was still a candidate-controlled deviation from exam protocol; anything cleared because it belongs to the environment, to staff, to capture quality, or to a misclassification is exactly 0.00 and may be omitted.
+- `refs` names what the behaviour is drawn from: signalIds you emitted, episodeIds, or "cleared:<eventType>".
+- `holisticTrustScore` is your own 0-100 read of the session. The reported score is computed from your impacts; this is recorded only as a cross-check.
+
 === INTEGRITY STORY ===
 Every emitting signal needs integrityStory: headline, whatHappened, whyItMatters, honestAlternative, severity, involvedQuestions, and proofAnchors.
 Write like a human examiner and do not echo detector templates.
@@ -109,7 +130,7 @@ Content — 4 to 6 sentences, roughly 90 to 140 words:
   Close with what this means for the reviewer's decision.
 
 When nothing was substantiated, say so in ONE plain sentence and stop — no padding, no caveats about the analysis.
-  Example: "No malpractice was found — the candidate completed the exam on their own, with no phone, no other person and no outside help seen or heard at any point."
+  Example: "No malpractice was found. The candidate completed the exam on their own, with no phone, no other person and no outside help seen or heard at any point."
 
 Language — write for someone non-technical:
   Never use: behaviour, signal, episode, window, modality, telemetry, machine fact, baseline, evidence source,
@@ -130,7 +151,11 @@ Valid JSON only:
   "confidence": 0.0,
   "recommendation": "",
   "reasoning": "",
-  "keyReasons": []
+  "keyReasons": [],
+  "trustAssessment": {
+    "behaviours": [{"label": "", "refs": [], "disposition": "confirmed|suspicious|cleared_residual", "impact": 0.0, "why": ""}],
+    "holisticTrustScore": 100
+  }
 }
 `category` and `confidence` are yours — your `recommendation` and `reasoning` are shown to the reviewer as written. Two checks apply afterwards and will downgrade you, so state a verdict the citations carry:
   STRONG_EVIDENCE needs at least one signal you resolved as `assisted`, and evidence in more than one window or more than one modality — three citations of a single moment are one source, not three.
@@ -146,6 +171,7 @@ def build_deliberation_user_prompt(
     baseline_stats: str,
     correlated_signals_text: str = "CORRELATED_SIGNALS:\n  (none)",
     sections_text: str = "SECTIONS:\n  (none)",
+    cleared_ledger_text: str = "CLEARED LEDGER:\n  (none)",
 ) -> str:
     return f"""{citation_inventory}
 
@@ -165,5 +191,8 @@ def build_deliberation_user_prompt(
 
 === SECTION MAP ===
 {sections_text}
+
+=== CLEARED LEDGER (already adjudicated as non-violations) ===
+{cleared_ledger_text}
 
 Produce the JSON object described in the system instructions."""

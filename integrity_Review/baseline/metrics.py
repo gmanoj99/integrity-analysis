@@ -1,5 +1,3 @@
-"""Candidate-only metric aggregation from MachineFacts."""
-
 from __future__ import annotations
 
 import math

@@ -1,9 +1,7 @@
-"""Scope 3.5 correlation contracts — aligned with scope35Contracts.ts."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -52,9 +50,6 @@ WEIGHT_TABLE: dict[str, int] = {
     "external_resource_then_paste": 14,
     "face_absent_during_input": 14,
     "interact_speech_input_correct": 18,
-    # Corroboration pairs that stand on perception and focus telemetry alone —
-    # no question scores, peer cohorts or submissions — so they still fire on a
-    # camera-only attempt, where the rest of this table cannot.
     "gaze_second_person_interacting": 14,
     "second_person_discussing": 16,
     "phone_with_answer_speech": 16,
@@ -180,6 +175,13 @@ class TimelineEvent(ContractModel):
     evidence_ref: str
 
 
+class ContributionMember(ContractModel):
+    kind: str
+    t_ms: int
+    end_ms: int | None = None
+    evidence_ref: str = ""
+
+
 class RiskContribution(ContractModel):
     factor_id: str
     label: str
@@ -195,6 +197,7 @@ class RiskContribution(ContractModel):
     question_id: str | None = None
     time_range_ms: tuple[int, int]
     evidence_refs: list[str] = Field(default_factory=list)
+    member_events: list[ContributionMember] = Field(default_factory=list)
     cohort_ref_ids: list[str] | None = None
     rationale: str = ""
 
@@ -261,6 +264,7 @@ def make_contribution(
     question_number: int | None = None,
     question_id: str | None = None,
     cohort_ref_ids: list[str] | None = None,
+    members: list[Any] | None = None,
 ) -> RiskContribution:
     weight = WEIGHT_TABLE[factor_id]
     clamped = max(0.0, min(1.0, intensity))
@@ -279,6 +283,15 @@ def make_contribution(
         question_id=question_id,
         time_range_ms=time_range_ms,
         evidence_refs=evidence_refs,
+        member_events=[
+            ContributionMember(
+                kind=str(getattr(m, "kind", "")),
+                t_ms=int(getattr(m, "t_ms", 0) or 0),
+                end_ms=getattr(m, "end_ms", None),
+                evidence_ref=str(getattr(m, "evidence_ref", "") or ""),
+            )
+            for m in (members or [])
+        ],
         cohort_ref_ids=cohort_ref_ids,
         rationale=rationale,
     )

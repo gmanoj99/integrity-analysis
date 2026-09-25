@@ -1,9 +1,3 @@
-"""boto3-backed S3 adapter: implements both ``ObjectStore`` and ``MediaUriProvider``.
-
-One instance is bound to a single bucket. The worker creates one per bucket role
-(media, staged requests, results) sharing a single boto3 client.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -22,11 +16,7 @@ _MISSING_OBJECT_CODES = {"404", "NoSuchKey", "NoSuchBucket"}
 
 
 class ObjectNotFoundError(FileNotFoundError):
-    """Raised when a key does not exist, so callers can treat it as terminal.
-
-    A missing object never becomes present by retrying the same message, which
-    is what separates it from a throttled or transient S3 error.
-    """
+    pass
 
 
 class S3ObjectStore:
@@ -58,8 +48,6 @@ class S3ObjectStore:
         return json.loads((await self.get_bytes(ref)).decode("utf-8"))
 
     async def head_object(self, ref: str) -> bool:
-        """Return ``True`` if ``ref`` already exists in this bucket."""
-
         return await asyncio.to_thread(self._head_object_sync, ref)
 
     def _head_object_sync(self, ref: str) -> bool:

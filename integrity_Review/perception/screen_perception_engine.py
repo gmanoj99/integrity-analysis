@@ -1,5 +1,3 @@
-"""Screen perception bundle assembly from cached chunk observations."""
-
 from __future__ import annotations
 
 import hashlib

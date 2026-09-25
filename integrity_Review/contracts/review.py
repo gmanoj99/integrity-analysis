@@ -1,5 +1,3 @@
-"""Normalized pipeline request contracts."""
-
 from typing import Any
 
 from pydantic import Field
@@ -9,9 +7,6 @@ from .evidence import ManifestSet
 
 
 class SectionInput(ContractModel):
-    # A section the candidate never opened has no exam attempt and no start
-    # time, so only ``section_id`` is guaranteed. Stages that need a time span
-    # skip sections without one rather than treating the review as invalid.
     section_id: str = Field(min_length=1)
     exam_attempt_id: str | None = None
     exam_id: str | None = None

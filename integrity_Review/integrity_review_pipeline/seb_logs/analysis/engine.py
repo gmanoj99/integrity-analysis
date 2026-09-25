@@ -153,6 +153,7 @@ def _build_analysis_result(
     """Build a SebLogAiAnalysisResult from parsed AI response."""
     return SebLogAiAnalysisResult(
         session_journey=parsed.get("sessionJourney", []),
+        simplified_journey=parsed.get("simplifiedJourney", []),
         findings=parsed.get("findings", []),
         correlated_incidents=parsed.get("correlatedIncidents", []),
         technical_problems=parsed.get("technicalProblems", []),
@@ -180,7 +181,7 @@ async def analyze_session(
     deps: SebLogAiDeps,
     evidence: ReducedSessionEvidence,
     *,
-    max_retries: int = 1,
+    max_retries: int = 2,
 ) -> SebLogAiAnalysisResult:
     """Analyze a single session's reduced evidence with AI.
 
@@ -299,6 +300,16 @@ async def analyze_session(
                     "error": str(error),
                 },
             )
+            if attempt < max_retries:
+                deps.logger.warning(
+                    "seb-log-analysis: AI call failed, retrying",
+                    session_folder=session_folder,
+                    attempt=attempt + 1,
+                    error=str(error),
+                )
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+
             deps.logger.error(
                 "seb-log-analysis: AI call failed",
                 session_folder=session_folder,

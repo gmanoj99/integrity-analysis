@@ -1,5 +1,3 @@
-"""Video finding classifiers — port of videoFindingsDerivation.ts classifiers."""
-
 from __future__ import annotations
 
 from collections import Counter
@@ -340,11 +338,6 @@ def classify_gaze(live: list[PerceptionObservation], bundle: PerceptionBundle) -
     )
     merge_gap_ms = DERIVATION_CONFIG["gaze"]["SEGMENT_MERGE_GAP_SEC"] * 1000
     for direction, eps in by_dir.items():
-        # Every gaze segment goes to the model as "provisional". Clearing sparse
-        # glances here on an episode count decided the question before anyone
-        # looked at how long the candidate actually looked away, or at what.
-        # The counts and durations below are reported so the model can weigh
-        # them; they no longer gate emission.
         segments = _cluster_gaze_segments(eps, merge_gap_ms)
         session_cumulative_sec = _sec(sum(e.duration_ms for e in eps))
         for segment in segments:
@@ -488,20 +481,6 @@ def classify_audio_wearables(live: list[PerceptionObservation], bundle: Percepti
 
 
 def _dominant(values: list[str], default: str) -> str:
-    """The most frequent value, ties broken by what was seen first.
-
-    This used to be ``max(set(values), key=values.count)``. ``max`` over a set
-    resolves ties by iteration order, and set iteration order for strings
-    depends on the process hash seed — so on a tie the same recording produced
-    a different answer on each run. For speech that decided whether a passage
-    was ``discussing_solution`` (a finding) or ``self_talk`` (benign context),
-    which then changed the episode inventory and the correlation set, so two
-    identical reviews of one candidate could disagree.
-
-    Falling back to first occurrence keeps the result stable and ties it to
-    the order the evidence actually appeared in, rather than to a hash.
-    """
-
     if not values:
         return default
     counts = Counter(values)

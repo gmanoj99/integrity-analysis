@@ -1,5 +1,3 @@
-"""boto3-backed SQS adapter, bound to a single queue URL."""
-
 from __future__ import annotations
 
 import asyncio
@@ -25,9 +23,6 @@ class SqsClient:
     def _receive_sync(
         self, max_messages: int, wait_time_seconds: int, visibility_timeout: int
     ) -> list[dict[str, Any]]:
-        # ApproximateReceiveCount / SentTimestamp are the only way the processor
-        # can tell a first delivery from a redelivery and give up on a message
-        # that keeps failing before it silently reaches the DLQ.
         response = self._client.receive_message(
             QueueUrl=self._queue_url,
             MaxNumberOfMessages=max_messages,

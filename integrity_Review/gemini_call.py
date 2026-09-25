@@ -1,10 +1,3 @@
-"""Single choke point for Gemini calls.
-
-Every call site goes through here so the concurrency limiter and the AI usage
-log are applied exactly once per call, on both success and failure. Usage
-logging failures are swallowed — logging must never fail a review.
-"""
-
 from __future__ import annotations
 
 import time
@@ -15,8 +8,6 @@ from .adapters.ai_usage_logger import AI_USAGE_STATUS_FAILURE, AI_USAGE_STATUS_S
 
 
 class GeminiClient(Protocol):
-    """Protocol for Gemini client."""
-
     async def generate(
         self,
         *,
@@ -27,21 +18,15 @@ class GeminiClient(Protocol):
 
 
 class GeminiLimiter(Protocol):
-    """Protocol for Gemini rate limiter."""
-
     async def __aenter__(self) -> None: ...
     async def __aexit__(self, *args: Any) -> None: ...
 
 
 class Logger(Protocol):
-    """Protocol for logger."""
-
     def warning(self, message: str, **fields: Any) -> None: ...
 
 
 class AiUsageLogger(Protocol):
-    """Protocol for AI usage logger."""
-
     def record(
         self,
         *,
@@ -56,11 +41,6 @@ class AiUsageLogger(Protocol):
 
 
 class AiDeps(Protocol):
-    """Protocol for AI dependencies.
-
-    Both PipelineDeps (video) and SebLogAiDeps satisfy this structurally.
-    """
-
     gemini: GeminiClient
     limiter: GeminiLimiter
     logger: Logger
@@ -102,21 +82,6 @@ async def generate_and_log(
     config: Mapping[str, Any],
     extra_meta: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    """Generate content via Gemini with usage logging.
-
-    Args:
-        deps: Dependencies providing gemini client, limiter, logger, and usage logger.
-              Both PipelineDeps and SebLogAiDeps satisfy this protocol.
-        step: The pipeline step name for usage logging
-        model: The Gemini model to use
-        model_version: Version string for the prompt/model combination
-        contents: The content messages to send
-        config: Gemini configuration dict
-        extra_meta: Additional metadata for usage logging
-
-    Returns:
-        The Gemini response mapping
-    """
     start = time.perf_counter()
     try:
         async with deps.limiter:
@@ -145,3 +110,4 @@ async def generate_and_log(
         extra_meta=extra_meta,
     )
     return response
+

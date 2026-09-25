@@ -1,5 +1,3 @@
-"""Base Pydantic model with the pipeline's JSON conventions."""
-
 from pydantic import BaseModel, ConfigDict
 
 
@@ -9,8 +7,6 @@ def to_camel(value: str) -> str:
 
 
 class ContractModel(BaseModel):
-    """Accept snake_case or camelCase and serialize as camelCase."""
-
     model_config = ConfigDict(
         alias_generator=to_camel,
         populate_by_name=True,

@@ -1,5 +1,3 @@
-"""Session mapper — canonical timeline synchronization (TS masterTimeline.ts parity)."""
-
 from __future__ import annotations
 
 import re
@@ -789,10 +787,6 @@ def build_master_timeline(
         session_start_ms = min(all_event_timestamps)
         t0_source = "fallback_events"
     else:
-        # Any evidence type can anchor T0 here: a review whose camera chunks are
-        # all missing would otherwise fall back to 0 and turn every screen or
-        # rrweb offset into a raw epoch, producing a report full of absurd
-        # timestamps instead of a usable one.
         chunk_epochs = [
             parsed.start_epoch_ms
             for chunk in (*video_chunks, *screen_chunks, *keystroke_chunks)

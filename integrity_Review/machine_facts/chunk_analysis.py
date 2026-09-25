@@ -1,5 +1,3 @@
-"""Deterministic per-chunk rrweb analysis: custom events and activity gaps."""
-
 from __future__ import annotations
 
 import uuid
@@ -23,8 +21,6 @@ MOUSE_CONTEXT_MENU = 3
 
 
 def event_timestamp_ms(event: dict[str, Any]) -> int | None:
-    """rrweb events come from the browser, so ``timestamp`` can be absent."""
-
     try:
         return int(event["timestamp"])
     except (KeyError, TypeError, ValueError):
@@ -52,8 +48,6 @@ def reconstruct_activity_events(
         if source == RRWEB_SOURCE_STYLESHEET_RULE:
             filtered_noise += 1
             continue
-        # An event the client wrote without a usable timestamp is unplaceable;
-        # skip it rather than aborting the chunk (and with it the review).
         timestamp = event_timestamp_ms(event)
         if timestamp is None:
             continue
@@ -126,7 +120,7 @@ def _extract_custom_events(events: list[dict[str, Any]]) -> list[MachineFact]:
 def analyze_keystroke_chunk(
     events: list[dict[str, Any]], *, sequence: int = 0
 ) -> list[MachineFact]:
-    del sequence  # kept for API compatibility with the TS pipeline
+    del sequence
     facts = _extract_custom_events(events)
     activity, _ = reconstruct_activity_events(events)
     for index in range(1, len(activity)):

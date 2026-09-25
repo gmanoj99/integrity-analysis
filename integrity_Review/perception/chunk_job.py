@@ -1,5 +1,3 @@
-"""Per-chunk Gemini perception job (camera + screen)."""
-
 from __future__ import annotations
 
 import json
@@ -61,8 +59,6 @@ from ..prompts.shared import (
 
 SPEECH_SUMMARY_STUB = "Speech present without parseable content."
 
-# The camera half (4096) plus the screen half (2048) of the two calls this one
-# call replaces.
 SCREEN_CAMERA_MAX_OUTPUT_TOKENS = PERCEPTION_MAX_OUTPUT_TOKENS + 2048
 
 EVENT_KINDS: tuple[PerceptionEventKind, ...] = (
@@ -169,7 +165,7 @@ def parse_events_response(
                 continue
             start_local = float(item.get("startMsLocal", float("nan")))
             end_local = float(item.get("endMsLocal", float("nan")))
-            if start_local != start_local or end_local != end_local:  # NaN check
+            if start_local != start_local or end_local != end_local:
                 continue
             start_local = _clamp(start_local, 0, chunk_duration_ms)
             end_local = _clamp(end_local, 0, chunk_duration_ms)
@@ -659,13 +655,6 @@ async def analyze_screen_chunk(
     cache_key = screen_chunk_cache_key(payload.chunk_id)
     cached = await deps.cache.get(cache_key)
     if isinstance(cached, dict):
-        # Two shapes live under this key. A completed job stores the parsed
-        # observation; only a job interrupted before parsing leaves the raw
-        # response. Accepting just the raw form meant the parsed form — the
-        # one actually written on success — never hit, so every re-run
-        # re-analysed every screen chunk and overwrote the good result with
-        # the new one. ``_load_screen_observation`` already reads both; this
-        # is the same test on the write path.
         if cached.get("chunkId") or cached.get("chunk_id"):
             return ScreenObservation.model_validate(cached)
         if isinstance(cached.get("text"), str):
@@ -687,7 +676,7 @@ async def analyze_screen_chunk(
     )
     flash_config = {
         "temperature": 0,
-        "maxOutputTokens": 2048,
+        "maxOutputTokens": PERCEPTION_MAX_OUTPUT_TOKENS,
         "responseMimeType": "application/json",
         "systemInstruction": SCREEN_PERCEPTION_SYSTEM_PROMPT,
     }
@@ -710,14 +699,6 @@ def _stamp_session_window(
     parsed: PerceptionChunkResult,
     payload: PerceptionChunkJobPayload,
 ) -> list[PerceptionObservation]:
-    """Pin quiet-chunk observations to the chunk's session window.
-
-    A copy of the tail of :func:`analyze_camera_chunk`, kept separate so that
-    analyser stays untouched: a fully-reviewed chunk with no events projects to
-    a single ``w_0_<duration>`` observation that has to be moved onto the
-    session clock before the bundle builder can place it.
-    """
-
     return [
         obs.model_copy(
             update={
@@ -736,25 +717,11 @@ def _stamp_session_window(
 
 @dataclass(frozen=True, slots=True)
 class ScreenCameraChunkAnalysis:
-    """The two results one combined clip yields from a single Gemini call.
-
-    ``screen`` is ``None`` only when no call was made (a clip too short for
-    Gemini), mirroring ``analyze_screen_chunk``'s skip; the camera half always
-    has a result because the camera analyser degrades rather than skips.
-    """
-
     camera: CachedPerceptionChunk
     screen: ScreenObservation | None
 
 
 def split_screen_camera_response(text: str | None) -> tuple[str | None, str | None]:
-    """Split ``{"camera": …, "screen": …}`` into the two parsers' inputs.
-
-    Each half is handed back as JSON text so the existing camera and screen
-    parsers can consume it unchanged. A half that is absent or is not a JSON
-    object comes back as ``None``, which each caller degrades in its own way.
-    """
-
     cleaned = _clean_json_text(text)
     if not cleaned:
         return None, None
@@ -776,16 +743,6 @@ async def analyze_screen_camera_chunk(
     deps: PipelineDeps,
     payload: PerceptionChunkJobPayload,
 ) -> ScreenCameraChunkAnalysis:
-    """One Gemini call over a combined clip → a camera result and a screen one.
-
-    Deliberately mirrors :func:`analyze_camera_chunk` and
-    :func:`analyze_screen_chunk`: the same short-clip guards, the same single
-    retry on an unparseable camera half, the same degraded values when the
-    response never becomes usable. The two halves are then handed to those
-    analysers' own parsers, so a combined chunk is indistinguishable from a
-    separately-recorded pair everywhere downstream.
-    """
-
     camera_cache_key = perception_chunk_cache_key(payload.chunk_id)
     screen_cache_key = screen_chunk_cache_key(payload.chunk_id)
 
@@ -865,15 +822,11 @@ async def analyze_screen_camera_chunk(
     _, camera_text, screen_text = await call()
     parsed = parse_events_response(camera_text, payload)
     if parsed is None:
-        # Same single retry as the camera analyser: a truncated or non-JSON
-        # response is the one failure an identical retry usually clears.
         _, camera_text, retry_screen_text = await call()
         parsed = parse_events_response(camera_text, payload)
         if retry_screen_text is not None:
             screen_text = retry_screen_text
 
-    # The screen analyser has no notion of an unusable response beyond its
-    # parser's own fallback, so hand it whatever came back and let it degrade.
     screen_observation = parse_screen_response(screen_text or "", payload)
 
     if parsed is None:
@@ -908,8 +861,6 @@ async def _cached_camera_chunk(
     cache_key: str,
     payload: PerceptionChunkJobPayload,
 ) -> CachedPerceptionChunk | None:
-    """The camera analyser's read-through cache check, reused for combined clips."""
-
     cached = await deps.cache.get(cache_key)
     if not isinstance(cached, dict):
         return None
@@ -932,8 +883,6 @@ async def _cached_screen_observation(
     cache_key: str,
     payload: PerceptionChunkJobPayload,
 ) -> ScreenObservation | None:
-    """The screen analyser's read-through cache check, reused for combined clips."""
-
     cached = await deps.cache.get(cache_key)
     if not isinstance(cached, dict):
         return None
@@ -957,9 +906,6 @@ async def process_perception_chunk_job(
             )
             return None
         analysis = await analyze_screen_camera_chunk(deps, payload)
-        # Both namespaces, one chunk id: the camera bundle builder and the
-        # screen bundle builder each find their own half without knowing the
-        # two came out of a single file and a single call.
         await deps.cache.set(
             perception_chunk_cache_key(payload.chunk_id),
             analysis.camera.model_dump(by_alias=True),

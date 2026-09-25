@@ -51,6 +51,44 @@ class ConfidenceLevel(str, Enum):
     LOW = "low"
 
 
+class AudienceGuidance(str, Enum):
+    """Audience guidance for non-technical reviewers."""
+
+    NO_ACTION_NEEDED = "no_action_needed"
+    INFORMATIONAL = "informational"
+    REVIEW_RECOMMENDED = "review_recommended"
+    INVESTIGATE_BEFORE_RELEASE = "investigate_before_release"
+
+
+class SimplifiedPhaseStatus(str, Enum):
+    """Status of a simplified journey phase."""
+
+    OBSERVED = "observed"
+    INFERRED = "inferred"
+    NOT_OBSERVED = "not_observed"
+    MIXED = "mixed"
+
+
+class ConcernLevel(str, Enum):
+    """Concern level for a simplified journey phase."""
+
+    NONE = "none"
+    MINOR = "minor"
+    NEEDS_REVIEW = "needs_review"
+
+
+class SimplifiedJourneyPhase(ContractModel):
+    """Simplified journey phase for non-technical readers."""
+
+    phase_id: str
+    phase_name: str
+    technical_phase_ids: list[str] = Field(default_factory=list)
+    status: SimplifiedPhaseStatus
+    concern_level: ConcernLevel
+    plain_summary: str
+    key_events_plain: list[str] = Field(default_factory=list)
+
+
 class JourneyPhase(ContractModel):
     """Analysis of a session journey phase."""
 
@@ -69,7 +107,7 @@ class ProcessContext(ContractModel):
     """Process context for a finding."""
 
     name: str
-    pid: int
+    pid: int | None = None
     path: str | None = None
     original_name: str | None = None
     signed: bool | None = None
@@ -107,6 +145,9 @@ class FindingAnalysis(ContractModel):
     config_cited: list[str] = Field(default_factory=list)
     process_context: ProcessContext | None = None
     window_context: WindowContext | None = None
+    plain_language_title: str | None = None
+    plain_language_explanation: str | None = None
+    audience_guidance: AudienceGuidance | None = None
 
 
 class CorrelatedIncidentAnalysis(ContractModel):
@@ -167,12 +208,15 @@ class ReviewerSummary(ContractModel):
     coverage_limitations: list[str] = Field(default_factory=list)
     events_requiring_investigation: list[str] = Field(default_factory=list)
     summary_text: str
+    plain_verdict_headline: str | None = None
+    plain_summary_text: str | None = None
 
 
 class SebLogAiAnalysisResult(ContractModel):
     """Complete AI analysis result for a SEB log session."""
 
     session_journey: list[JourneyPhase] = Field(default_factory=list)
+    simplified_journey: list[SimplifiedJourneyPhase] = Field(default_factory=list)
     findings: list[FindingAnalysis] = Field(default_factory=list)
     correlated_incidents: list[CorrelatedIncidentAnalysis] = Field(default_factory=list)
     technical_problems: list[TechnicalProblem] = Field(default_factory=list)

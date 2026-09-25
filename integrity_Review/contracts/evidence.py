@@ -1,5 +1,3 @@
-"""Evidence manifests produced from test signed URLs."""
-
 from enum import StrEnum
 
 from pydantic import AnyHttpUrl, Field

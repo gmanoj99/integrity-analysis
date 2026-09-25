@@ -1,5 +1,3 @@
-"""Build the canonical assessment timeline from activity logs."""
-
 from __future__ import annotations
 
 import json
@@ -21,7 +19,6 @@ SECTION_END_TYPES = {
 
 
 def parse_activity_log_epoch_ms(creation_datetime: str) -> int:
-    """Topin activity logs store IST-naive timestamps — match TS parseActivityLogEpochMs."""
     normalized = creation_datetime.strip().replace(" ", "T")
     if not normalized.endswith(("Z", "z")) and not re.search(
         r"[+-]\d{2}:?\d{2}$", normalized
@@ -58,8 +55,6 @@ def parse_activity_epoch_ms(value: str | int | float) -> int:
 
 
 def _order_key(log: dict[str, Any]) -> int:
-    """Sort by the backend's order, tolerating missing or non-numeric values."""
-
     try:
         return int(_value(log, "order", "sequence", default=0) or 0)
     except (TypeError, ValueError):
@@ -67,8 +62,6 @@ def _order_key(log: dict[str, Any]) -> int:
 
 
 def _anchor_order(log: dict[str, Any], fallback: int) -> int:
-    """``order`` can be absent or explicitly null on a backend log row."""
-
     try:
         raw = _value(log, "order", "sequence", default=None)
         return fallback if raw is None else int(raw)
@@ -77,8 +70,6 @@ def _anchor_order(log: dict[str, Any], fallback: int) -> int:
 
 
 def _safe_epoch_ms(value: str | int | float | None) -> int | None:
-    """Parse a timestamp, or return ``None`` when it is absent or malformed."""
-
     if value is None:
         return None
     try:
@@ -107,12 +98,6 @@ def _metadata(log: dict[str, Any]) -> dict[str, Any]:
 def _sections_from_spec(
     section_details: list[SectionInput], t0: int, anchors: list[ActivityAnchor]
 ) -> list[SessionSection]:
-    """Build sections straight from the backend's ``sections[]`` datetimes.
-
-    The backend does not always emit ``SECTION_STARTED``/``SECTION_*`` anchors in
-    the activity log, so this is the primary source when it is available.
-    """
-
     dated = [detail for detail in section_details if detail.start_datetime]
     if not dated:
         return []
@@ -123,8 +108,6 @@ def _sections_from_spec(
     for index, detail in enumerate(ordered):
         start_epoch_ms = _safe_epoch_ms(detail.start_datetime)
         if start_epoch_ms is None:
-            # One section with an unusable timestamp must not cost the whole
-            # review; it simply contributes no span to the timeline.
             continue
         start_ms = max(0, start_epoch_ms - t0)
         end_epoch_ms = _safe_epoch_ms(detail.end_datetime)
@@ -189,8 +172,6 @@ def build_canonical_timeline(
             )
         )
 
-    # A log row the backend could not timestamp cannot be placed on the
-    # timeline, but the rest of the session is still perfectly analysable.
     timed_logs = [log for log in sorted_logs if epoch(log) is not None]
     if not timed_logs:
         return CanonicalTimeline(

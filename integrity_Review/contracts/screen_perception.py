@@ -1,5 +1,3 @@
-"""Screen-perception contracts (one observation per screen chunk)."""
-
 from __future__ import annotations
 
 from typing import Literal
@@ -8,11 +6,6 @@ from pydantic import Field
 
 from .base import ContractModel
 
-# Keyed into the screen chunk cache, so this must move whenever the screen
-# prompt does — otherwise a prompt change is silently replayed against
-# observations the old prompt produced. Camera avoids the trap by keying off
-# PERCEPTION_PROMPT_VERSION directly; screen carries its own tag, so the two
-# have to be bumped together.
 SCREEN_PERCEPTION_VERSION = "screen-perc-v5"
 
 ScreenTernary = Literal["yes", "no", "UNKNOWN"]

@@ -1,12 +1,3 @@
-"""AI usage logging to the shared custom-ai-logs CloudWatch group.
-
-Mirrors the JSON shape of nxtwave_assessments_backend's existing AI_USAGE_LOG
-events field-for-field so this worker's Gemini usage lands in the same
-project/team/group dashboards. This is a separate boto3 PutLogEvents path,
-deliberately independent of the ECS awslogs driver used for the service's own
-container logs.
-"""
-
 from __future__ import annotations
 
 import json
@@ -85,8 +76,6 @@ def _usage_event(
 
 
 class CloudWatchAiUsageLogger:
-    """Bound to one review's meta; publishes via the shared factory callbacks."""
-
     def __init__(
         self,
         *,
@@ -123,9 +112,6 @@ class CloudWatchAiUsageLogger:
 
 
 class CloudWatchAiUsageLoggerFactory:
-    """Builds one CloudWatchAiUsageLogger per review, sharing a client and
-    ensuring the log stream exists at most once for the worker's lifetime."""
-
     def __init__(
         self,
         *,
@@ -152,8 +138,6 @@ class CloudWatchAiUsageLoggerFactory:
         self._stream_ready = True
 
     def _put_events(self, message: str) -> None:
-        # Shared beta/prod streams have concurrent writers across tasks; retry
-        # with the server's expected sequence token when PutLogEvents races.
         log_events = [{"timestamp": int(time.time() * 1000), "message": message}]
         for _ in range(5):
             kwargs: dict[str, Any] = {
@@ -190,8 +174,6 @@ class CloudWatchAiUsageLoggerFactory:
 
 
 class NullAiUsageLogger:
-    """No-op default for local runs and tests without AWS credentials."""
-
     def record(
         self,
         *,

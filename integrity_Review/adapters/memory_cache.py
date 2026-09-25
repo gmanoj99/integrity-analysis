@@ -1,5 +1,3 @@
-"""Per-review in-memory perception cache (no cross-review or cross-process sharing)."""
-
 from __future__ import annotations
 
 import asyncio

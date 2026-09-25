@@ -1,10 +1,3 @@
-"""Refcounted ``ecs:UpdateTaskProtection`` so scale-in never kills an in-flight review.
-
-Protection is enabled while at least one review is running and disabled once the
-last one finishes. Resolves the task ARN from the ECS Task Metadata Endpoint v4
-and no-ops (with a debug log) outside ECS, e.g. in local runs and tests.
-"""
-
 from __future__ import annotations
 
 import asyncio

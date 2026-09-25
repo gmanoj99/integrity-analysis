@@ -1,5 +1,3 @@
-"""Canonical activity and artifact timeline."""
-
 from .activity_log_timeline import (
     build_canonical_timeline,
     parse_activity_log_epoch_ms,

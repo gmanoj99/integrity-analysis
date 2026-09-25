@@ -1,5 +1,3 @@
-"""Candidate chains and contribution deduplication."""
-
 from __future__ import annotations
 
 from .contracts import (

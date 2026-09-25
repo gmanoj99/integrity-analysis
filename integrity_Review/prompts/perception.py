@@ -1,5 +1,3 @@
-"""Camera and screen perception prompts (faithful TypeScript port)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -543,8 +541,6 @@ SCREEN_CAMERA_PERCEPTION_SYSTEM_PROMPT = (
     f"{SCREEN_CAMERA_LAYOUT_RULE}"
 )
 
-# The fields ``parse_screen_response`` reads, nothing more: the screen half of
-# the combined response is fed to that parser unchanged.
 SCREEN_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -584,8 +580,6 @@ SCREEN_RESPONSE_SCHEMA: dict[str, Any] = {
     },
 }
 
-# One response, two halves — each half is exactly the schema its existing
-# parser already understands, so neither parser has to change.
 SCREEN_CAMERA_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["camera", "screen"],
@@ -676,13 +670,6 @@ def build_screen_camera_user_prompt(
     end_s: int,
     duration_s: int,
 ) -> str:
-    """Both existing user prompts under one instruction, for the single call.
-
-    Each half is the prompt its own analyser already sends, so the model sees
-    the same task description it does today — only the framing that the two
-    views arrive in one clip is new.
-    """
-
     return f"""This clip is a screen recording with a picture-in-picture webcam inset. \
 Analyze it ONCE and return both halves.
 

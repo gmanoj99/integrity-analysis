@@ -1,5 +1,3 @@
-"""Remaining correlation detectors — split from detectors.py for maintainability."""
-
 from __future__ import annotations
 
 from ..machine_facts.kinds import MachineFactKind
@@ -562,6 +560,7 @@ def detect_gaze_with_device(ctx: DetectCtx) -> list[RiskContribution]:
                     timing_basis="section_clock",
                     time_range_ms=(min(gaze.t_ms, phone.t_ms), max(gaze_end, phone_end)),
                     evidence_refs=[gaze.evidence_ref, phone.evidence_ref],
+                    members=[gaze, phone],
                     rationale=(
                         f"suspicious_eye_movement co-occurs with phone_usage "
                         f"(within {config.gaze_device_cooccur_ms}ms)"
@@ -644,6 +643,7 @@ def detect_gaze_then_answer_commit(ctx: DetectCtx) -> list[RiskContribution]:
                 section_title=ans.section_title,
                 time_range_ms=(gaze.t_ms, ans.t_ms),
                 evidence_refs=[gaze.evidence_ref, ans.evidence_ref],
+                members=[gaze, ans],
                 cohort_ref_ids=cohort_refs or None,
                 rationale=(
                     f"suspicious_eye_movement ended then {ans.kind} {delta}ms later "
@@ -1509,13 +1509,6 @@ def _cooccurrence(
     right: list[TimelineEvent],
     pad_ms: int,
 ) -> list[tuple[TimelineEvent, TimelineEvent]]:
-    """Every (left, right) pair whose episodes overlap within ``pad_ms``.
-
-    Each pair is yielded once; a long episode on one side legitimately pairs
-    with several on the other, which is what makes a sustained co-occurrence
-    score higher than a single brush.
-    """
-
     pairs: list[tuple[TimelineEvent, TimelineEvent]] = []
     seen: set[str] = set()
     for a in left:
@@ -1533,12 +1526,6 @@ def _cooccurrence(
 
 
 def detect_gaze_second_person_interacting(ctx: DetectCtx) -> list[RiskContribution]:
-    """Off-screen gaze while a second person is interacting.
-
-    Either alone is weak — candidates look away to think, and people walk
-    behind them. Together the gaze has somewhere to have gone.
-    """
-
     timeline, config = ctx.timeline, ctx.config
     gazes = perception_episodes_by_kinds(timeline, GAZE_EVENT_TYPES)
     others = perception_episodes_by_kinds(timeline, SECOND_PERSON_EVENT_TYPES)
@@ -1556,6 +1543,7 @@ def detect_gaze_second_person_interacting(ctx: DetectCtx) -> list[RiskContributi
                     max(gaze.end_ms or gaze.t_ms, other.end_ms or other.t_ms),
                 ),
                 evidence_refs=[gaze.evidence_ref, other.evidence_ref],
+                members=[gaze, other],
                 rationale=(
                     f"{gaze.kind} co-occurs with {other.kind} "
                     f"(within {config.second_person_cooccur_ms}ms)"
@@ -1566,8 +1554,6 @@ def detect_gaze_second_person_interacting(ctx: DetectCtx) -> list[RiskContributi
 
 
 def detect_second_person_discussing(ctx: DetectCtx) -> list[RiskContribution]:
-    """A second person interacting while the speech is about the answers."""
-
     timeline, config = ctx.timeline, ctx.config
     others = perception_episodes_by_kinds(timeline, SECOND_PERSON_EVENT_TYPES)
     speech = [
@@ -1582,8 +1568,6 @@ def detect_second_person_discussing(ctx: DetectCtx) -> list[RiskContribution]:
             make_contribution(
                 "second_person_discussing",
                 tier=1,
-                # Dictation and a direct request for the answer leave less room
-                # for an innocent reading than a general discussion does.
                 intensity=0.9
                 if speech_class in {"receiving_dictation", "asking_for_answer"}
                 else 0.75,
@@ -1594,6 +1578,7 @@ def detect_second_person_discussing(ctx: DetectCtx) -> list[RiskContribution]:
                     max(other.end_ms or other.t_ms, said.end_ms or said.t_ms),
                 ),
                 evidence_refs=[other.evidence_ref, said.evidence_ref],
+                members=[other, said],
                 rationale=(
                     f"{other.kind} co-occurs with speech classified "
                     f"{speech_class} (within {config.second_person_cooccur_ms}ms)"
@@ -1604,8 +1589,6 @@ def detect_second_person_discussing(ctx: DetectCtx) -> list[RiskContribution]:
 
 
 def detect_phone_with_answer_speech(ctx: DetectCtx) -> list[RiskContribution]:
-    """A phone in view while the answers are being discussed or dictated."""
-
     timeline, config = ctx.timeline, ctx.config
     phones = perception_episodes_by_kind(timeline, "phone_usage")
     speech = [
@@ -1628,6 +1611,7 @@ def detect_phone_with_answer_speech(ctx: DetectCtx) -> list[RiskContribution]:
                     max(phone.end_ms or phone.t_ms, said.end_ms or said.t_ms),
                 ),
                 evidence_refs=[phone.evidence_ref, said.evidence_ref],
+                members=[phone, said],
                 rationale=(
                     f"phone_usage co-occurs with speech classified {speech_class} "
                     f"(within {config.phone_speech_cooccur_ms}ms)"
@@ -1638,8 +1622,6 @@ def detect_phone_with_answer_speech(ctx: DetectCtx) -> list[RiskContribution]:
 
 
 def detect_second_monitor_with_gaze(ctx: DetectCtx) -> list[RiskContribution]:
-    """A secondary workspace on screen while the candidate looks off-screen."""
-
     timeline, config = ctx.timeline, ctx.config
     gazes = perception_episodes_by_kinds(timeline, GAZE_EVENT_TYPES)
     workspaces = [
@@ -1659,6 +1641,7 @@ def detect_second_monitor_with_gaze(ctx: DetectCtx) -> list[RiskContribution]:
                     max(gaze.end_ms or gaze.t_ms, workspace.end_ms or workspace.t_ms),
                 ),
                 evidence_refs=[gaze.evidence_ref, workspace.evidence_ref],
+                members=[gaze, workspace],
                 rationale=(
                     "secondary workspace visible while gaze was off-screen "
                     f"(within {config.second_monitor_cooccur_ms}ms)"
@@ -1669,12 +1652,6 @@ def detect_second_monitor_with_gaze(ctx: DetectCtx) -> list[RiskContribution]:
 
 
 def detect_blur_burst(ctx: DetectCtx) -> list[RiskContribution]:
-    """Repeated tab switches or focus losses in a short span.
-
-    One switch is noise; a cluster of them is a pattern of leaving the exam,
-    and it needs no paste to be worth a reviewer's attention.
-    """
-
     timeline, config = ctx.timeline, ctx.config
     blurs = sorted((e for e in timeline if e.kind in BLUR_KINDS), key=lambda e: e.t_ms)
     out: list[RiskContribution] = []
@@ -1690,8 +1667,6 @@ def detect_blur_burst(ctx: DetectCtx) -> list[RiskContribution]:
         key = window[0].evidence_ref
         if key in used:
             continue
-        # Each blur belongs to the first burst that claims it, so a long run of
-        # switches reports once rather than once per member.
         used.update(e.evidence_ref for e in window)
         span_ms = window[-1].t_ms - first.t_ms
         out.append(
@@ -1714,8 +1689,6 @@ def detect_blur_burst(ctx: DetectCtx) -> list[RiskContribution]:
 
 
 def detect_fullscreen_exit_then_input(ctx: DetectCtx) -> list[RiskContribution]:
-    """Fullscreen lost, then typing or a paste before it is restored."""
-
     timeline, config = ctx.timeline, ctx.config
     exits = [e for e in timeline if e.kind == MachineFactKind.SCREEN_FULLSCREEN_LOST.value]
     inputs = sorted((e for e in timeline if e.kind in INPUT_AFTER_GAZE_KINDS), key=lambda e: e.t_ms)
@@ -1750,12 +1723,6 @@ def detect_fullscreen_exit_then_input(ctx: DetectCtx) -> list[RiskContribution]:
 
 
 def detect_paste_without_prior_copy(ctx: DetectCtx) -> list[RiskContribution]:
-    """A paste whose clipboard was never filled by a copy inside the exam.
-
-    Content pasted without a preceding in-exam COPY came from somewhere else by
-    construction, which is what makes this stronger than paste volume alone.
-    """
-
     timeline, config = ctx.timeline, ctx.config
     copies = [e for e in timeline if e.kind == MachineFactKind.COPY.value]
     pastes = [

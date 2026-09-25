@@ -1,5 +1,3 @@
-"""Offset clip resolution and media index (no physical clip bytes)."""
-
 from __future__ import annotations
 
 import hashlib
@@ -11,13 +9,7 @@ from ..duck_helpers import attr
 EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v29"
 
 
-# Which recording holds the evidence for each finding. A finding about the
-# person or the room is on the webcam; one about what was displayed is on the
-# screen recording. This is the same split the reviewer UI groups its
-# categories by, and the two have to agree — a card filed under "Attention
-# Away from Screen" that plays a screen capture is worse than no clip.
 EVENT_TYPE_EVIDENCE_STREAM: dict[str, Literal["video", "screen"]] = {
-    # The person or the room — webcam
     "possible_audio_coaching": "video",
     "possible_second_person_involvement": "video",
     "possible_external_consultation": "video",
@@ -42,7 +34,6 @@ EVENT_TYPE_EVIDENCE_STREAM: dict[str, Literal["video", "screen"]] = {
     "multiple_faces": "video",
     "background_person_passing_by": "video",
     "brief_seat_movement": "video",
-    # What was on the display — screen recording
     "fullscreen_exam_lost": "screen",
     "external_resource_open": "screen",
     "ai_assistant_ui_visible": "screen",
@@ -62,13 +53,6 @@ EVENT_TYPE_EVIDENCE_STREAM: dict[str, Literal["video", "screen"]] = {
 
 
 def evidence_stream_for_event(event_type: str) -> Literal["video", "screen"] | None:
-    """The recording a finding of this type is evidenced on, if known.
-
-    Returns None for an unmapped type rather than guessing: the resolver then
-    behaves exactly as it did before, which is the safe direction for a
-    vocabulary that grows.
-    """
-
     return EVENT_TYPE_EVIDENCE_STREAM.get(event_type)
 
 
@@ -123,20 +107,6 @@ def resolve_offset_clip_ref(
     single_segment: bool = False,
     prefer_evidence_type: Literal["video", "screen"] | None = None,
 ) -> ClipRef | None:
-    """Playback window for ``event_ms`` + ``duration_ms``, as chunk segments.
-
-    ``single_segment`` keeps only the chunk the event starts in and clamps the
-    window to that chunk's end, so a reviewer gets one clip positioned on the
-    evidence instead of a reel of consecutive chunks to scrub through.
-
-    ``prefer_evidence_type`` says which recording actually holds the evidence.
-    Without it, a single-segment clip took whichever stream ``build_media_index``
-    happened to emit first at that instant — the screen artifact, at nearly
-    every point in time — so "candidate received dictated answers" played a
-    screen capture with no candidate in it. The preference is a preference, not
-    a filter: a session recorded on one stream only still gets its clip.
-    """
-
     if not media_index:
         return None
     end_ms = event_ms + max(duration_ms, 1)
@@ -159,12 +129,6 @@ def resolve_offset_clip_ref(
     if not segments:
         return None
     if single_segment:
-        # Keep the chunk the event itself falls in, then slide the window back
-        # inside it far enough to keep its full length. Clamping to whatever
-        # remained after the event turned an anchor in a chunk's final moments
-        # into a clip of a few milliseconds; sliding keeps the moment on screen
-        # and still hands the reviewer one real clip.
-        # The stream the evidence is on, when the caller knows it.
         candidates = [
             e for e in covered if e.evidence_type == prefer_evidence_type
         ] or covered
@@ -190,9 +154,6 @@ def resolve_offset_clip_ref(
         ]
         event_ms = best.session_start_ms + local_start
         end_ms = event_ms + want
-    # An event derived from a pre-T0 chunk carries a negative session offset;
-    # the playback window is clamped to the session start for the same reason as
-    # in build_media_index.
     clip_start_ms = max(0, event_ms)
     return ClipRef(
         segments=segments,

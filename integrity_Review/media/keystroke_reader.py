@@ -1,5 +1,3 @@
-"""Decode the two rrweb chunk encodings observed in production."""
-
 from __future__ import annotations
 
 import gzip

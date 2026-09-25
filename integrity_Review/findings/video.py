@@ -1,5 +1,3 @@
-"""Video findings entry points."""
-
 from __future__ import annotations
 
 from ..contracts.perception import PerceptionBundle
@@ -10,7 +8,6 @@ from .video_derivation import DERIVATION_CONFIG, build_episodes, derive_video_fi
 def derive_video_findings(
     windows_or_bundle: list[VideoObservationWindow] | PerceptionBundle,
 ) -> EvidenceFindingsResult:
-    """Derive video findings from a full perception bundle (preferred) or legacy windows."""
     if isinstance(windows_or_bundle, PerceptionBundle):
         result = derive_video_findings_from_perception(windows_or_bundle)
         flagged = [f for f in result.findings if f.verdict == "flagged"]

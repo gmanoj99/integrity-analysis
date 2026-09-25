@@ -1,5 +1,3 @@
-"""Scope 2 perception contracts (camera / webcam)."""
-
 from __future__ import annotations
 
 from typing import Any, Literal

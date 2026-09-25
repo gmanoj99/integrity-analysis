@@ -1,5 +1,3 @@
-"""Machine facts compute-once contracts."""
-
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -51,8 +49,6 @@ class MachineFactsSummary(ContractModel):
 
 
 class ClientReportedEvent(ContractModel):
-    """Optional proctoring / platform events supplied with the review request."""
-
     timestamp_ms: int
     kind: str
     evidence_type: EvidenceSource = "client_reported"
@@ -64,8 +60,6 @@ class ClientReportedEvent(ContractModel):
 
 
 class MachineFactsBundle(ContractModel):
-    """Immutable Scope 1 artifact — downstream scopes read only this bundle."""
-
     model_config = ContractModel.model_config | {"frozen": True}
 
     candidate_id: str

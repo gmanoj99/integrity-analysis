@@ -1,5 +1,3 @@
-"""Map raw rrweb type-5 custom event tags to canonical MachineFactKind values."""
-
 from __future__ import annotations
 
 from .kinds import MachineFactKind
