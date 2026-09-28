@@ -174,6 +174,12 @@ class AttachedFindings:
     is_instantaneous: bool = False
 
 
+def _card_keystroke_evidence(
+    event_type: str, evidence: KeystrokeEvidence | None
+) -> KeystrokeEvidence | None:
+    return None if evidence_stream_for_event(event_type) == "video" else evidence
+
+
 def _inserted_chars(finding: Any) -> int:
     proof = attr(finding, "keystroke_proof", "keystrokeProof")
     return int(attr(proof, "inserted_char_count", "insertedCharCount", default=0) or 0)
@@ -327,7 +333,9 @@ def build_curated_track_b_observations(
                 notable_phrases=phrases or quotes,
                 speech_language=language,
                 source_types=[str(s) for s in signal.source_types],
-                keystroke_evidence=found.keystroke_evidence,
+                keystroke_evidence=_card_keystroke_evidence(
+                    str(signal.signal_type), found.keystroke_evidence
+                ),
                 is_instantaneous=found.is_instantaneous,
                 evidence_refs=found.refs,
             )
@@ -371,7 +379,9 @@ def build_curated_track_b_observations(
                 audio_summary=summary,
                 notable_phrases=phrases,
                 speech_language=language,
-                keystroke_evidence=found.keystroke_evidence,
+                keystroke_evidence=_card_keystroke_evidence(
+                    str(event_type), found.keystroke_evidence
+                ),
                 is_instantaneous=found.is_instantaneous,
                 evidence_refs=found.refs,
             )
@@ -854,8 +864,6 @@ def _build_correlated_pattern(
     if str(attr(c, "factor_id", "factorId", default="")) in CAMERA_PROOF_FACTORS:
         paste_evidence = None
     if paste_evidence is not None:
-        # A keystroke pattern is proven by what was typed or pasted; a camera
-        # clip of the same moment shows nothing about it.
         moments = [m.model_copy(update={"clip_ref": None}) for m in moments]
     audio_summary, phrases, language = _speech_in_window(perception_bundle, time_range)  # type: ignore[arg-type]
     window_ids = sorted({
