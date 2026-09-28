@@ -813,14 +813,19 @@ def _correlation_machine_facts(
             "kind": fact_kind(fact),
             "startOffsetMs": attr(fact, "start_offset_ms", "startOffsetMs", default=0),
         })
-        pasted = detail.get("pastedExcerpt") if isinstance(detail, Mapping) else None
-        if pasted and excerpt is None:
+        if not isinstance(detail, Mapping):
+            continue
+        pasted = detail.get("pastedExcerpt")
+        is_keystroke = attr(fact, "evidence_source", "evidenceSource") == "keystroke"
+        if (pasted or (is_keystroke and detail.get("charsAdded"))) and excerpt is None:
             excerpt = KeystrokeEvidence(
-                pasted_excerpt=str(pasted),
+                pasted_excerpt=str(pasted) if pasted else None,
                 inserted_char_count=detail.get("charsAdded"),
                 final_value_length=detail.get("totalChars"),
             )
     return rows, excerpt
+
+CAMERA_PROOF_FACTORS = frozenset({"gaze_off_then_speech_then_answer"})
 
 
 def _build_correlated_pattern(
@@ -846,6 +851,12 @@ def _build_correlated_pattern(
         members=list(attr(c, "member_events", "memberEvents", default=[]) or []),
     )
     facts, paste_evidence = _correlation_machine_facts(refs, machine_facts_bundle)
+    if str(attr(c, "factor_id", "factorId", default="")) in CAMERA_PROOF_FACTORS:
+        paste_evidence = None
+    if paste_evidence is not None:
+        # A keystroke pattern is proven by what was typed or pasted; a camera
+        # clip of the same moment shows nothing about it.
+        moments = [m.model_copy(update={"clip_ref": None}) for m in moments]
     audio_summary, phrases, language = _speech_in_window(perception_bundle, time_range)  # type: ignore[arg-type]
     window_ids = sorted({
         f"w_{a}_{b}" for ref in refs for a, b in _WINDOW_RE.findall(str(ref))
