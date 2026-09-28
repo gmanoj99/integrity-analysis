@@ -907,14 +907,39 @@ def _build_correlated_pattern(
     )
 
 
+def _cleared_by_deliberation(
+    contribution: Any, episodes: list[Any], active_signal_ids: set[str]
+) -> bool:
+    factor_id = str(attr(contribution, "factor_id", "factorId", default=""))
+    t0, t1 = attr(contribution, "time_range_ms", "timeRangeMs", default=(0, 0))
+    related = [
+        e
+        for e in episodes
+        if factor_id in e.factor_ids
+        and e.time_range_ms[0] <= t1
+        and t0 <= e.time_range_ms[1]
+    ]
+    return bool(related) and not any(
+        active_signal_ids.intersection(e.emitted_signal_ids) for e in related
+    )
+
+
 def _build_correlated_patterns(
     correlated_signals: Any | None,
     *,
     media_index: list | None = None,
     perception_bundle: Any = None,
     machine_facts_bundle: Any = None,
+    deliberation_bundle: DeliberationBundle | None = None,
 ) -> CorrelatedPatternsSection:
     contributions = attr(correlated_signals, "contributions", default=[]) or []
+    if deliberation_bundle is not None:
+        episodes = list(deliberation_bundle.episode_analysis or [])
+        active_ids = {s.signal_id for s in active_signals(deliberation_bundle)}
+        contributions = [
+            c for c in contributions
+            if not _cleared_by_deliberation(c, episodes, active_ids)
+        ]
     return CorrelatedPatternsSection(
         patterns=[
             _build_correlated_pattern(
@@ -974,6 +999,7 @@ def assemble_evidence_bundle(input_data: EvidenceBundleInput) -> EvidenceBundle:
         media_index=media_index,
         perception_bundle=input_data.perception_bundle,
         machine_facts_bundle=input_data.machine_facts_bundle,
+        deliberation_bundle=bundle,
     )
     return EvidenceBundle(
         candidate_id=input_data.candidate_id,

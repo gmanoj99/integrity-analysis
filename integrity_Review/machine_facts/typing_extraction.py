@@ -70,6 +70,17 @@ def _classify_input(text: str, is_checked: bool | None, section_type: str | None
     return "real_typing"
 
 
+def _is_editor_line_switch(prev: str, nxt: str) -> bool:
+    prev_lines = [line for line in prev.splitlines() if line.strip()]
+    next_lines = [line for line in nxt.splitlines() if line.strip()]
+    if len(prev_lines) > 1 or len(next_lines) > 1 or not (prev_lines or next_lines):
+        return False
+    if not prev_lines or not next_lines:
+        return True
+    before, after = prev_lines[0].strip(), next_lines[0].strip()
+    return before not in after and after not in before
+
+
 def _is_autoformat(prev: str, nxt: str) -> bool:
     skeleton = lambda value: re.sub(r"[\s{}()[\]<>;,'\"]", "", value)
     return skeleton(prev) == skeleton(nxt)
@@ -435,6 +446,9 @@ def extract_rrweb_typing_facts(
                         },
                     )
                 )
+            elif prev_text is not None and _is_editor_line_switch(prev_text, text):
+                element_last_text[element_id] = text
+                continue
             elif prev_text is not None:
                 state = element_state.get(element_id)
                 delta = len(text) - len(prev_text)
