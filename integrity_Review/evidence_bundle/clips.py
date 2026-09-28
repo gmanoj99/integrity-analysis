@@ -99,66 +99,70 @@ def build_media_index(master_timeline: Any) -> list[MediaIndexEntry]:
     return entries
 
 
+MIN_CLIP_MS = 5_000
+MAX_CLIP_LEAD_MS = 10_000
+MIN_CHUNK_TAIL_MS = 3_000
+
+
 def resolve_offset_clip_ref(
     *,
     event_ms: int,
     duration_ms: int,
     media_index: list[MediaIndexEntry],
-    single_segment: bool = False,
     prefer_evidence_type: Literal["video", "screen"] | None = None,
 ) -> ClipRef | None:
     if not media_index:
         return None
     end_ms = event_ms + max(duration_ms, 1)
-    segments: list[ClipSegment] = []
-    covered: list[MediaIndexEntry] = []
-    for entry in media_index:
-        if entry.session_end_ms < event_ms or entry.session_start_ms > end_ms:
-            continue
-        local_start = max(0, event_ms - entry.session_start_ms)
-        local_end = min(entry.duration_ms, end_ms - entry.session_start_ms)
-        segments.append(
+    covered = sorted(
+        (
+            entry
+            for entry in media_index
+            if entry.duration_ms > 0
+            and entry.session_start_ms < end_ms
+            and entry.session_start_ms + entry.duration_ms > event_ms
+        ),
+        key=lambda entry: entry.session_start_ms,
+    )
+    candidates = [e for e in covered if e.evidence_type == prefer_evidence_type] or covered
+    if not candidates:
+        return None
+    index = next(
+        (
+            i
+            for i, e in enumerate(candidates)
+            if e.session_start_ms <= event_ms < e.session_start_ms + e.duration_ms
+        ),
+        0,
+    )
+    best = candidates[index]
+    tail_ms = best.session_start_ms + best.duration_ms - event_ms
+    if tail_ms < MIN_CHUNK_TAIL_MS and end_ms > event_ms + tail_ms and index + 1 < len(candidates):
+        best = candidates[index + 1]
+    offset_ms = max(0, event_ms - best.session_start_ms)
+    want = min(max(duration_ms, MIN_CLIP_MS), best.duration_ms)
+    local_start = max(
+        min(offset_ms, best.duration_ms - want), offset_ms - MAX_CLIP_LEAD_MS, 0
+    )
+    local_end = min(best.duration_ms, local_start + want)
+    clip_start_ms = best.session_start_ms + local_start
+    views = (
+        [best]
+        if candidates is not covered
+        else [e for e in covered if e.chunk_id == best.chunk_id]
+    )
+    return ClipRef(
+        segments=[
             ClipSegment(
-                chunk_id=entry.chunk_id,
-                evidence_type=entry.evidence_type,
+                chunk_id=view.chunk_id,
+                evidence_type=view.evidence_type,
                 seek_to_ms=local_start,
                 end_ms_local=local_end,
             )
-        )
-        covered.append(entry)
-    if not segments:
-        return None
-    if single_segment:
-        candidates = [
-            e for e in covered if e.evidence_type == prefer_evidence_type
-        ] or covered
-        best = next(
-            (
-                e
-                for e in candidates
-                if e.session_start_ms <= event_ms < e.session_start_ms + e.duration_ms
-            ),
-            candidates[0],
-        )
-        want = min(max(duration_ms, 1), best.duration_ms)
-        local_start = min(
-            max(0, event_ms - best.session_start_ms), max(0, best.duration_ms - want)
-        )
-        segments = [
-            ClipSegment(
-                chunk_id=best.chunk_id,
-                evidence_type=best.evidence_type,
-                seek_to_ms=local_start,
-                end_ms_local=local_start + want,
-            )
-        ]
-        event_ms = best.session_start_ms + local_start
-        end_ms = event_ms + want
-    clip_start_ms = max(0, event_ms)
-    return ClipRef(
-        segments=segments,
+            for view in views
+        ],
         clip_start_ms=clip_start_ms,
-        clip_end_ms=max(clip_start_ms, end_ms),
+        clip_end_ms=best.session_start_ms + local_end,
     )
 
 

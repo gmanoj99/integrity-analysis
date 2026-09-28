@@ -549,7 +549,6 @@ def build_integrity_stories(
                 event_ms=evidence_start,
                 duration_ms=max(OBSERVATION_CLIP_DURATION_MS, evidence_end - evidence_start),
                 media_index=media_index,
-                single_segment=True,
                 prefer_evidence_type=evidence_stream_for_event(signal.signal_type),
             )
             if covered_windows > 0 and media_index

@@ -331,9 +331,8 @@ def build_video_spans(
                     sequences=[prev.sequence, curr.sequence],
                 )
             )
-
     max_seq = max(
-        total_chunks,
+        total_chunks - 1,
         sorted_received[-1].sequence if sorted_received else 0,
     )
     min_seq = sorted_received[0].sequence if sorted_received else 1

@@ -741,7 +741,6 @@ def _correlation_moments(
                 event_ms=anchor,
                 duration_ms=span_ms,
                 media_index=media_index,
-                single_segment=True,
                 prefer_evidence_type=prefer_evidence_type,  # type: ignore[arg-type]
             )
             label = _moment_label(kind, anchor)
@@ -790,7 +789,6 @@ def _correlation_moments(
                     event_ms=start,
                     duration_ms=span,
                     media_index=media_index,
-                    single_segment=True,
                     prefer_evidence_type=prefer_evidence_type,  # type: ignore[arg-type]
                 ),
             )
