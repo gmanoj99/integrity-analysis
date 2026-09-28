@@ -320,7 +320,7 @@ def build_curated_track_b_observations(
                 confidence=signal.confidence,
                 resolution=str(signal.resolution),
                 severity=story.severity if story else None,
-                what_happened=heard or (story.what_happened if story else None),
+                what_happened=(story.what_happened if story else None) or heard,
                 why_it_matters=story.why_it_matters if story else None,
                 honest_alternative=story.honest_alternative if story else None,
                 audio_summary=summary,

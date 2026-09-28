@@ -49,12 +49,12 @@ from .rules import (
     compute_deliberation_version_hash,
     compute_informative_content_ratio,
     derive_source_types,
+    drop_invented_citations,
     filter_audio_quotes_against_perception,
     parse_integrity_story,
     synthesize_integrity_story_fallback,
     validate_citation_rule,
     validate_episode_ref,
-    validate_no_fact_invention,
     validate_unknown_rule,
     validate_value_resolving_citations,
 )
@@ -189,6 +189,8 @@ def parse_raw_output(text: str) -> dict[str, Any]:
 
 
 _MEDIA_URI_RE = re.compile(r"^\s*data:([^;,]*)[;,]", re.I)
+_ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+_PROMPT_HIDDEN_DETAIL_KEYS = frozenset({"sectionId", "examAttemptId", "examId"})
 _MAX_DETAIL_VALUE_CHARS = 500
 
 
@@ -196,6 +198,8 @@ def _prompt_safe_detail(detail: Any) -> dict[str, Any]:
     raw = dict(detail) if isinstance(detail, Mapping) else {}
     safe: dict[str, Any] = {}
     for key, value in raw.items():
+        if key in _PROMPT_HIDDEN_DETAIL_KEYS:
+            continue
         if isinstance(value, str):
             media = _MEDIA_URI_RE.match(value)
             if media:
@@ -282,11 +286,18 @@ def _serialize_sections(master_timeline: Any | None) -> str:
     if not sections:
         return "SECTIONS:\n  (none — treat the session as a single block)"
     lines = ["SECTIONS (a moment's section is the one whose range contains it):"]
-    for section in sections:
-        label = _attr(section, "label", default="") or _attr(section, "section_id", "sectionId")
+    for index, section in enumerate(sections, start=1):
+        label = str(_attr(section, "label", default="") or "")
+        ids = {
+            str(_attr(section, name, default="") or "")
+            for name in ("section_id", "exam_attempt_id", "exam_id")
+        }
+        name = f"Section {index}"
+        if label and label not in ids and not _ID_LIKE_RE.search(label):
+            name = f"{name} ({label})"
         start = _attr(section, "start_ms", "startMs", default=0)
         end = _attr(section, "end_ms", "endMs", default=0)
-        lines.append(f"  - {label}: {_fmt_ms(start)}-{_fmt_ms(end)}")
+        lines.append(f"  - {name}: {_fmt_ms(start)}-{_fmt_ms(end)}")
     return "\n".join(lines)
 
 
@@ -787,19 +798,20 @@ def build_deliberation_bundle(
         signal_window = _signal_window_from_citations(
             trimmed, observations_by_window_id, episode_by_id
         )
-        if not validate_no_fact_invention(
+        trimmed = drop_invented_citations(
             trimmed,
             machine_fact_kinds_present,
             window_ids_present,
             set(KNOWN_BASELINE_METRICS),
             fact_windows_by_kind=fact_windows_by_kind,
             signal_window_ms=signal_window,
-        ):
+        )
+        if not validate_citation_rule(trimmed):
             rejected.append(
                 RejectedSignal(
                     signal_type=raw_sig.signal_type,
                     rejected_by="NoFactInventionRule",
-                    reason="Cited fact/window/metric missing",
+                    reason="No cited fact/window/metric exists in range",
                     episode_ref=raw_sig.episode_ref,
                     citations=[
                         *raw_sig.observations_cited,

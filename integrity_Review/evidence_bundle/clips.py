@@ -6,7 +6,7 @@ from typing import Any, Literal
 from ..contracts.evidence_bundle import ClipRef, ClipSegment, MediaIndexEntry
 from ..duck_helpers import attr
 
-EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v29"
+EVIDENCE_BUNDLE_LOGIC_VERSION = "scope5-v30"
 
 
 EVENT_TYPE_EVIDENCE_STREAM: dict[str, Literal["video", "screen"]] = {

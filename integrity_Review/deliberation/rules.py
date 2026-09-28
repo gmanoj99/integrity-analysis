@@ -436,37 +436,69 @@ def validate_conjunction_rule(
 FACT_CITATION_PAD_MS = 15_000
 
 
-def validate_no_fact_invention(
+def _fact_citation_ok(
+    kind: str,
+    machine_fact_kinds_present: set[str],
+    fact_windows_by_kind: dict[str, list[tuple[int, int]]] | None,
+    signal_window_ms: tuple[int, int] | None,
+) -> bool:
+    if kind not in machine_fact_kinds_present:
+        return False
+    if fact_windows_by_kind is None or signal_window_ms is None:
+        return True
+    spans = fact_windows_by_kind.get(kind)
+    if not spans:
+        return True
+    start, end = signal_window_ms
+    return any(
+        span_start - FACT_CITATION_PAD_MS <= end
+        and span_end + FACT_CITATION_PAD_MS >= start
+        for span_start, span_end in spans
+    )
+
+
+def drop_invented_citations(
     signal: RawCandidateSignal,
     machine_fact_kinds_present: set[str],
     window_ids_present: set[str],
     baseline_metric_names_present: set[str],
     fact_windows_by_kind: dict[str, list[tuple[int, int]]] | None = None,
     signal_window_ms: tuple[int, int] | None = None,
-) -> bool:
-    for kind in signal.machine_facts_cited:
-        if kind not in machine_fact_kinds_present:
-            return False
-        if fact_windows_by_kind is None or signal_window_ms is None:
-            continue
-        spans = fact_windows_by_kind.get(kind)
-        if not spans:
-            continue
-        start, end = signal_window_ms
-        if not any(
-            span_start - FACT_CITATION_PAD_MS <= end
-            and span_end + FACT_CITATION_PAD_MS >= start
-            for span_start, span_end in spans
-        ):
-            return False
-    for ref in signal.observations_cited:
-        window_id = ref.split(".")[0]
-        if window_id and window_id not in window_ids_present:
-            return False
-    for metric in signal.baseline_metrics_cited:
-        if metric not in baseline_metric_names_present:
-            return False
-    return True
+) -> RawCandidateSignal:
+    """Keep only citations that exist: known fact kinds inside the signal's
+    window (± FACT_CITATION_PAD_MS), known perception windows, known metrics.
+
+    One stray citation no longer discards a signal the rest of its citations
+    support; the caller rejects it only when nothing survives.
+    """
+    return RawCandidateSignal(
+        signal_type=signal.signal_type,
+        episode_ref=signal.episode_ref,
+        hypothesis_honest=signal.hypothesis_honest,
+        hypothesis_assisted=signal.hypothesis_assisted,
+        resolution=signal.resolution,
+        confidence=signal.confidence,
+        innocent_explanation_considered=signal.innocent_explanation_considered,
+        why_rejected=signal.why_rejected,
+        machine_facts_cited=[
+            kind
+            for kind in signal.machine_facts_cited
+            if _fact_citation_ok(
+                kind, machine_fact_kinds_present, fact_windows_by_kind, signal_window_ms
+            )
+        ],
+        observations_cited=[
+            ref
+            for ref in signal.observations_cited
+            if not ref.split(".")[0] or ref.split(".")[0] in window_ids_present
+        ],
+        baseline_metrics_cited=[
+            metric
+            for metric in signal.baseline_metrics_cited
+            if metric in baseline_metric_names_present
+        ],
+        integrity_story=signal.integrity_story,
+    )
 
 
 def active_validated_signals(signals: list[ValidatedSignal]) -> list[ValidatedSignal]:

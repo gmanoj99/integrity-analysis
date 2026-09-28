@@ -1,4 +1,4 @@
-DELIBERATION_PROMPT_VERSION = "scope4-v22"
+DELIBERATION_PROMPT_VERSION = "scope4-v23"
 
 TRACK2_CAPS = {
     "machine_fact_detail_rows": 20,
@@ -19,7 +19,17 @@ State the honest reading where one fits rather than suppressing it: invigilator 
 
 TRACK 2 — OPEN SCAN (bounded)
 Beyond the inventory, scan MACHINE FACTS / PERCEPTION EVENTS / BASELINE for cross-modal probable-cheating patterns the inventory missed. Propose new episodes with episodeId "model_ep1", "model_ep2", … (origin model_identified). They MUST pass the same citation and hard rules.
-For every emitting episode, emit exactly ONE catalogue signal with episodeRef set.
+For every emitting episode, emit ONE catalogue signal per DISTINCT behaviour, each with episodeRef set.
+
+=== ONE BEHAVIOUR PER SIGNAL ===
+An episode groups moments that happened close in time; it is not one behaviour. When an episode holds behaviours that are each strong on their own and come from different sources — e.g. a phone in the candidate's hand on camera AND an external paste or external site on the screen — emit them as SEPARATE signals with the same episodeRef, each citing only its own evidence.
+Merge evidence into one signal only when one piece is too weak to stand alone and the other is what makes it meaningful. Say how separate behaviours relate in `reasoning`, never by merging them into one signal.
+Choose signalType from that signal's own evidence:
+  phone in hand / phone call seen or heard on camera -> possible_external_consultation
+  external site, reference material or AI assistant on screen -> unauthorized_reference_usage
+  text pasted from outside the exam -> abnormal_paste_workflow
+  talking with or being helped by another person -> possible_second_person_involvement or possible_audio_coaching
+  off-screen gaze -> suspicious_focus_pattern
 
 === RULES ===
 
@@ -115,10 +125,13 @@ Rules:
 === INTEGRITY STORY ===
 Every emitting signal needs integrityStory: headline, whatHappened, whyItMatters, honestAlternative, severity, involvedQuestions, and proofAnchors.
 Write like a human examiner and do not echo detector templates.
+`headline` is the card title the reviewer sees: name ONLY this signal's behaviour, in under 12 words, and never join two behaviours with "and" (e.g. "Candidate held a phone during the exam", not "Candidate used a phone and pasted content").
+`whatHappened` describes only this signal's moment and brief audio summary(if available), not other behaviours near it.
 headline, whatHappened, whyItMatters and honestAlternative are read by non-technical reviewers: never write event codes (TYPING_STARTED, MCQ_ANSWER_SELECTED, LARGE_PASTE), finding names (suspicious_eye_movement), window ids or milliseconds. Say it in words: "the candidate looked away, then started typing 9 seconds later".
 
 === SUMMARY FOR THE REVIEWER ===
 `behaviorSummary` is the first thing on the reviewer's screen and is usually the only part read in full.
+Write it (and keyReasons, reasoning) LAST, after deciding candidateSignals, and base it ONLY on the signals you emitted: describe the ones resolved `assisted` (confirmed) first, then `ambiguous` (suspicious); cleared behaviour gets at most one short clause. Never describe a moment for which you emitted no signal.
 It is read by HR and hiring staff who have never seen this system and do not know how it works.
 Write it as if explaining to a colleague what happened in the room. Always write one, in every case.
 
@@ -126,7 +139,8 @@ Content — 4 to 6 sentences, roughly 90 to 140 words:
   Open with one sentence saying plainly whether the candidate took outside help, and how widespread it was.
   Then give the specific moments: what happened, roughly when ("at around 13 minutes"), and who was involved.
   Group repeats rather than listing each ("held a phone on four occasions between 49 and 57 minutes").
-  Name the section from the SECTION MAP for each moment ("In the MCQ section, ...").
+  Name the section for each moment using ONLY the SECTION MAP label, e.g. "In Section 2, ...".
+  Never write an ID, UUID or code for a section. If a moment's section is unclear, place it by time instead ("at around 14 minutes").
   Name a question number ONLY if one is supplied to you. Never guess one, and say nothing about questions if none is given.
   Close with what this means for the review, without telling the reviewer what to decide.
 

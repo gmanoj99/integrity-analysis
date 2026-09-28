@@ -310,6 +310,7 @@ def signal_time_span(
     signal: ValidatedSignal,
     perception_bundle: Any,
     machine_facts_bundle: Any,
+    episode_range_ms: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     observations = []
     seen: set[str] = set()
@@ -334,6 +335,16 @@ def signal_time_span(
             if obs_start - FACT_WINDOW_PAD_MS <= fact_start_ms(f) <= obs_end + FACT_WINDOW_PAD_MS
         ]
     else:
+        # A fact kind recurs across the session; anchor on the occurrence
+        # inside this signal's episode, not the session's first one.
+        if episode_range_ms is not None:
+            cited = [
+                f
+                for f in cited
+                if episode_range_ms[0] - FACT_WINDOW_PAD_MS
+                <= fact_start_ms(f)
+                <= episode_range_ms[1] + FACT_WINDOW_PAD_MS
+            ] or cited
         facts_used = []
         for fact in sorted(cited, key=fact_start_ms):
             if facts_used and fact_start_ms(fact) - fact_start_ms(facts_used[-1]) > FACT_CLUSTER_GAP_MS:
@@ -488,8 +499,13 @@ def build_integrity_stories(
     stories: list[IntegrityStoryEntry] = []
 
     for signal in active:
-        span = signal_time_span(signal, perception_bundle, machine_facts_bundle)
         episode = episode_by_signal.get(signal.signal_id)
+        span = signal_time_span(
+            signal,
+            perception_bundle,
+            machine_facts_bundle,
+            episode_range_ms=tuple(episode.time_range_ms) if episode and episode.time_range_ms else None,
+        )
         raw_story = signal.integrity_story or synthesize_integrity_story_fallback(
             signal_type=signal.signal_type,
             episode_summary=episode.episode_summary if episode else None,
