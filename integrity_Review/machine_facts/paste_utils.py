@@ -9,6 +9,7 @@ PASTE_DELETE_PAIR_GAP_MS = 5_000
 PASTE_DELETE_SIZE_RATIO = 0.7
 PASTED_EXCERPT_MAX_CHARS = 300
 COPY_LOOKBACK_MS = 120_000
+EXTERNAL_PASTE_BLOCKED_EXAM_MODES = frozenset({"rrweb", "screen"})
 
 
 def compute_paste_excerpt(prev_text: str, new_text: str) -> str:
@@ -69,7 +70,15 @@ def is_reportable_paste(fact: MachineFact, min_chars: int = 50) -> bool:
     return True
 
 
-def refine_paste_origins(facts: list[MachineFact]) -> None:
+def refine_paste_origins(
+    facts: list[MachineFact], *, external_paste_blocked: bool = False
+) -> None:
+    if external_paste_blocked:
+        for fact in facts:
+            if fact.kind in (MachineFactKind.LARGE_PASTE.value, MachineFactKind.PASTE.value):
+                fact.detail["pasteOrigin"] = "internal"
+                fact.detail["pasteOriginReason"] = "platform_blocks_external_paste"
+        return
     submissions = [
         fact for fact in facts if fact.kind == MachineFactKind.CODE_SUBMISSION.value
     ]

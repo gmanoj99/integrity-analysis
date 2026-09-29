@@ -5,6 +5,7 @@ import uuid
 
 from ..machine_facts.contracts import MachineFact
 from ..machine_facts.kinds import MachineFactKind
+from ..machine_facts.paste_utils import EXTERNAL_PASTE_BLOCKED_EXAM_MODES
 from .contracts import (
     EvidenceFinding,
     EvidenceFindingsResult,
@@ -83,6 +84,24 @@ def _fact_from_obs(
 
 EXTERNAL_SOURCE_PAD_MS = 60_000
 
+
+def _qr_attendance_facts(observations: list[ScreenObservation]) -> list[MachineFact]:
+    facts: list[MachineFact] = []
+    for obs in observations:
+        if obs.attendance_qr_visible != "yes":
+            continue
+        start = obs.attendance_qr_start_ms if obs.attendance_qr_start_ms is not None else obs.start_ms
+        end = obs.attendance_qr_end_ms if obs.attendance_qr_end_ms is not None else obs.end_ms
+        start, end = max(obs.start_ms, start), min(obs.end_ms, max(start, end))
+        fact = _fact_from_obs(
+            MachineFactKind.QR_ATTENDANCE_SHOWN,
+            obs,
+            {"durationMs": end - start, "sectionId": obs.section_id},
+        )
+        fact.start_offset_ms, fact.end_offset_ms = start, end
+        facts.append(fact)
+    return facts
+
 NON_EXAM_FOREGROUND = frozenset({"browser", "notes", "ai_chat", "messaging"})
 
 
@@ -156,14 +175,19 @@ def derive_screen_findings(
             verdict = "flagged"
             severity = "medium"
             reasoning = f"Screen episode: {event_type.replace('_', ' ')}."
-            if event_type == "screen_external_paste" and not _external_source_near(
-                observations, start.start_ms, end.end_ms
+            paste_blocked = "screen" in EXTERNAL_PASTE_BLOCKED_EXAM_MODES
+            if event_type == "screen_external_paste" and (
+                paste_blocked
+                or not _external_source_near(observations, start.start_ms, end.end_ms)
             ):
                 emit_type, emit_kind = "screen_paste", MachineFactKind.SCREEN_PASTE
                 verdict = "provisional"
                 severity = "low"
                 reasoning = (
-                    "Paste seen on screen with no external source visible around it; "
+                    "Paste seen on screen; the exam blocks pasting from outside, so the "
+                    "text was copied inside the exam."
+                    if paste_blocked
+                    else "Paste seen on screen with no external source visible around it; "
                     "origin not established."
                 )
             findings.append(
@@ -189,6 +213,8 @@ def derive_screen_findings(
             )
             synthetic_facts.append(_fact_from_obs(emit_kind, peak, detail_fn(peak)))
             index += 1
+
+    synthetic_facts.extend(_qr_attendance_facts(observations))
 
     parts: list[str] = []
     if any(finding.event_type == "external_resource_open" for finding in findings):

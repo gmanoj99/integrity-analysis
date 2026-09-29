@@ -6,7 +6,7 @@ from pydantic import Field
 
 from .base import ContractModel
 
-SCREEN_PERCEPTION_VERSION = "screen-perc-v5"
+SCREEN_PERCEPTION_VERSION = "screen-perc-v6"
 
 ScreenTernary = Literal["yes", "no", "UNKNOWN"]
 ForegroundAppClass = Literal[
@@ -35,6 +35,9 @@ class ScreenObservation(ContractModel):
     fullscreen_exam_likely: ScreenTernary = "UNKNOWN"
     paste_cue_visible: ScreenTernary = "UNKNOWN"
     pasted_text_excerpt: str | None = None
+    attendance_qr_visible: ScreenTernary = "UNKNOWN"
+    attendance_qr_start_ms: int | None = None
+    attendance_qr_end_ms: int | None = None
     visible_question_ref: str | None = None
     confidence: float = 0.0
     quality_caveat: str | None = None

@@ -601,6 +601,9 @@ Observe what is VISIBLE on the candidate's screen. Report ONLY observable facts.
 
 When pasteCueVisible=yes, extract pastedTextExcerpt (≤300 chars) or null if unreadable.
 When a question number/title is visible, set visibleQuestionRef; else null.
+When the exam shows its attendance QR pop-up (a large QR code titled "QR Attendance", asking the
+candidate to show it to the invigilator), set attendanceQrVisible=yes and give attendanceQrStartS /
+attendanceQrEndS: the seconds from this chunk's start when it appeared and disappeared (null if unsure).
 
 THE EXAM INCLUDES A CODE EDITOR.
 Coding sections are answered in an IDE that is part of the exam itself, so a code
@@ -734,6 +737,9 @@ SCREEN_RESPONSE_SCHEMA: dict[str, Any] = {
         "fullscreenExamLikely": TERNARY,
         "pasteCueVisible": TERNARY,
         "pastedTextExcerpt": {"type": "string", "nullable": True},
+        "attendanceQrVisible": TERNARY,
+        "attendanceQrStartS": {"type": "number", "nullable": True},
+        "attendanceQrEndS": {"type": "number", "nullable": True},
         "visibleQuestionRef": {"type": "string", "nullable": True},
         "confidence": {"type": "number"},
         "qualityCaveat": {"type": "string", "nullable": True},
@@ -895,4 +901,4 @@ sectionId: {section_id or "unknown"}
 session window: T+{start_s}s – T+{end_s}s
 duration: {duration_s}s
 
-Return one JSON object: examUiVisible, foregroundAppClass, externalResourceLabels, aiAssistantUiVisible, secondaryWorkspaceVisible, fullscreenExamLikely, pasteCueVisible, pastedTextExcerpt, visibleQuestionRef, confidence, qualityCaveat."""
+Return one JSON object: examUiVisible, foregroundAppClass, externalResourceLabels, aiAssistantUiVisible, secondaryWorkspaceVisible, fullscreenExamLikely, pasteCueVisible, pastedTextExcerpt, attendanceQrVisible, attendanceQrStartS, attendanceQrEndS, visibleQuestionRef, confidence, qualityCaveat."""

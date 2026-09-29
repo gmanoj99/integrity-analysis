@@ -39,10 +39,12 @@ from .episodes import (
 )
 from ..duck_helpers import attr, fact_kind
 from ..lib.plain_text import plain_text
+from ..machine_facts.kinds import MachineFactKind
 from .rules import (
     DELIBERATION_MODEL_VERSION,
     FIELD_PATH_RESOLVERS,
     KNOWN_BASELINE_METRICS,
+    PHONE_EVENT_KINDS,
     RawCandidateSignal,
     RawEpisodeAnalysis,
     SIGNAL_TYPES,
@@ -51,6 +53,7 @@ from .rules import (
     derive_source_types,
     drop_invented_citations,
     filter_audio_quotes_against_perception,
+    is_attendance_qr_phone_use,
     parse_integrity_story,
     synthesize_integrity_story_fallback,
     validate_citation_rule,
@@ -688,6 +691,15 @@ def build_deliberation_bundle(
         observations_by_window_id.setdefault(window_id, []).append(observation)
     window_ids_present = set(observations_by_window_id.keys())
     episode_by_id = {ep.episode_id: ep for ep in episode_inventory}
+    qr_intervals = fact_windows_by_kind.get(MachineFactKind.QR_ATTENDANCE_SHOWN.value, [])
+    phone_event_spans = [
+        (
+            int(_attr(event, "start_ms_session", "startMsSession", default=0) or 0),
+            int(_attr(event, "end_ms_session", "endMsSession", default=0) or 0),
+        )
+        for event in getattr(input_data.perception_bundle, "events", []) or []
+        if _attr(event, "kind") in PHONE_EVENT_KINDS
+    ]
 
     validated: list[ValidatedSignal] = []
     rejected: list[RejectedSignal] = []
@@ -812,6 +824,29 @@ def build_deliberation_bundle(
                     signal_type=raw_sig.signal_type,
                     rejected_by="NoFactInventionRule",
                     reason="No cited fact/window/metric exists in range",
+                    episode_ref=raw_sig.episode_ref,
+                    citations=[
+                        *raw_sig.observations_cited,
+                        *raw_sig.machine_facts_cited,
+                        *raw_sig.baseline_metrics_cited,
+                    ],
+                )
+            )
+            continue
+
+        if is_attendance_qr_phone_use(
+            trimmed,
+            qr_intervals_ms=qr_intervals,
+            phone_event_spans_ms=phone_event_spans,
+        ):
+            rejected.append(
+                RejectedSignal(
+                    signal_type=raw_sig.signal_type,
+                    rejected_by="AttendanceQrRule",
+                    reason=(
+                        "The phone was only seen while the exam showed its attendance QR, "
+                        "which the candidate is asked to show to the invigilator."
+                    ),
                     episode_ref=raw_sig.episode_ref,
                     citations=[
                         *raw_sig.observations_cited,

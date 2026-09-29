@@ -696,7 +696,7 @@ def build_smart_student_notes(
 ) -> SmartStudentNotesSection:
     notes: list[SmartStudentNote] = []
     for rejection in deliberation_bundle.rejected_signals:
-        if rejection.rejected_by != "SmartStudentGuard":
+        if rejection.rejected_by not in {"SmartStudentGuard", "AttendanceQrRule"}:
             continue
         notes.append(
             SmartStudentNote(

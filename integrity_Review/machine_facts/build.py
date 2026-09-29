@@ -6,6 +6,7 @@ from typing import Any
 
 from ..contracts.evidence import ExamMode
 from ..contracts.timeline import ActivityAnchor, MasterTimeline, SessionSection
+from .attendance_qr import extract_qr_attendance_facts
 from .chunk_analysis import analyze_keystroke_chunk
 from .contracts import (
     ClientReportedEvent,
@@ -16,7 +17,11 @@ from .contracts import (
     RrwebChunkEvents,
 )
 from .kinds import LIFECYCLE_KIND_MAP, MachineFactKind
-from .paste_utils import mark_paste_delete_pairs, refine_paste_origins
+from .paste_utils import (
+    EXTERNAL_PASTE_BLOCKED_EXAM_MODES,
+    mark_paste_delete_pairs,
+    refine_paste_origins,
+)
 from .typing_extraction import extract_rrweb_typing_facts, resolve_section_id
 
 MAX_SESSION_DURATION_MS = 8 * 60 * 60 * 1000
@@ -236,6 +241,13 @@ def build_machine_facts(
             sections=sections,
         )
         all_facts.extend(typing_facts)
+        all_facts.extend(
+            extract_qr_attendance_facts(
+                chunks=chunk_rows,
+                session_start_ms=session_start_ms,
+                sections=sections,
+            )
+        )
     elif exam_mode == ExamMode.SCREEN:
         limitations.append(
             "Exam mode is screen — rrweb keystroke typing facts are skipped; "
@@ -260,7 +272,10 @@ def build_machine_facts(
         )
 
     all_facts.sort(key=lambda fact: fact.start_offset_ms)
-    refine_paste_origins(all_facts)
+    refine_paste_origins(
+        all_facts,
+        external_paste_blocked=exam_mode.value in EXTERNAL_PASTE_BLOCKED_EXAM_MODES,
+    )
     mark_paste_delete_pairs(all_facts)
 
     if had_monaco:

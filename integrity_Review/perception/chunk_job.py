@@ -442,6 +442,12 @@ def _ternary(value: Any) -> ScreenTernary:
     return value if value in {"yes", "no", "UNKNOWN"} else "UNKNOWN"
 
 
+def _local_seconds_to_session_ms(value: Any, payload: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return min(payload.end_offset_ms, payload.start_offset_ms + round(value * 1000))
+
+
 def _app_class(value: Any) -> ForegroundAppClass:
     allowed: set[ForegroundAppClass] = {
         "exam_ide",
@@ -496,6 +502,13 @@ def parse_screen_response(text: str, payload: PerceptionChunkJobPayload) -> Scre
             fullscreen_exam_likely=_ternary(raw.get("fullscreenExamLikely")),
             paste_cue_visible=_ternary(raw.get("pasteCueVisible")),
             pasted_text_excerpt=excerpt,
+            attendance_qr_visible=_ternary(raw.get("attendanceQrVisible")),
+            attendance_qr_start_ms=_local_seconds_to_session_ms(
+                raw.get("attendanceQrStartS"), payload
+            ),
+            attendance_qr_end_ms=_local_seconds_to_session_ms(
+                raw.get("attendanceQrEndS"), payload
+            ),
             visible_question_ref=question_ref,
             confidence=confidence,
             quality_caveat=caveat,

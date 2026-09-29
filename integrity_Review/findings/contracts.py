@@ -176,6 +176,9 @@ class ScreenObservation(ContractModel):
     fullscreen_exam_likely: Literal["yes", "no", "UNKNOWN"] = "UNKNOWN"
     paste_cue_visible: Literal["yes", "no", "UNKNOWN"] = "UNKNOWN"
     pasted_text_excerpt: str | None = None
+    attendance_qr_visible: Literal["yes", "no", "UNKNOWN"] = "UNKNOWN"
+    attendance_qr_start_ms: int | None = None
+    attendance_qr_end_ms: int | None = None
     visible_question_ref: str | None = None
     confidence: float = 1.0
     quality_caveat: str | None = None

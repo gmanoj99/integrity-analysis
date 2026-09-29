@@ -40,6 +40,7 @@ TERMS: dict[str, str] = {
     "SCREEN_EXTERNAL_RESOURCE": "a non-exam site or app was open",
     "SCREEN_AI_ASSISTANT_UI": "an AI assistant was open on screen",
     "SCREEN_SECONDARY_WORKSPACE": "a second screen was in use",
+    "QR_ATTENDANCE_SHOWN": "the exam showed the attendance QR",
     "SECOND_MONITOR_DETECTED": "a second monitor was detected",
     "RIGHT_CLICK": "the candidate right-clicked",
     "ACTIVITY_GAP": "there was a gap in activity",

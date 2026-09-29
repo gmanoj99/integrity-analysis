@@ -36,6 +36,7 @@ RejectedByRule = Literal[
     "ValueResolutionRule",
     "ConjunctionRule",
     "NoFactInventionRule",
+    "AttendanceQrRule",
 ]
 
 

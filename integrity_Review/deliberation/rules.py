@@ -345,6 +345,48 @@ def validate_smart_student_guard(signal: RawCandidateSignal) -> bool:
     return not (only_speed_facts and no_obs and only_speed_metrics)
 
 
+ATTENDANCE_QR_PAD_MS = 15_000
+PHONE_OBSERVATION_FIELDS = frozenset(
+    {"hands.objectInHand", "hands.handLocation", "objects.phoneVisible"}
+)
+PHONE_EVENT_KINDS = frozenset({"phone_visible", "phone_in_hand"})
+
+
+def is_attendance_qr_phone_use(
+    signal: RawCandidateSignal,
+    *,
+    qr_intervals_ms: list[tuple[int, int]],
+    phone_event_spans_ms: list[tuple[int, int]],
+) -> bool:
+    if not qr_intervals_ms or not signal.observations_cited:
+        return False
+    if any(kind in DEFINITIVE_SOLO_MACHINE_FACT_KINDS for kind in signal.machine_facts_cited):
+        return False
+    windows: list[tuple[int, int]] = []
+    for ref in signal.observations_cited:
+        parsed = parse_observation_citation(ref)
+        if parsed is None or parsed[1] not in PHONE_OBSERVATION_FIELDS:
+            return False
+        bounds = parsed[0].split("_")
+        if len(bounds) != 3 or not bounds[1].isdigit() or not bounds[2].isdigit():
+            return False
+        windows.append((int(bounds[1]), int(bounds[2])))
+    spans = [
+        (start, end)
+        for start, end in phone_event_spans_ms
+        if any(start < w_end and end > w_start for w_start, w_end in windows)
+    ]
+    if not spans:
+        return False
+    return all(
+        any(
+            qr_start - ATTENDANCE_QR_PAD_MS <= start and end <= qr_end + ATTENDANCE_QR_PAD_MS
+            for qr_start, qr_end in qr_intervals_ms
+        )
+        for start, end in spans
+    )
+
+
 def validate_unknown_rule(signal: RawCandidateSignal) -> bool:
     obs = signal.observations_cited
     if not obs:
