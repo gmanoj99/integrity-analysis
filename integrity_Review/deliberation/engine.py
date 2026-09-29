@@ -48,12 +48,14 @@ from .rules import (
     RawCandidateSignal,
     RawEpisodeAnalysis,
     SIGNAL_TYPES,
+    active_validated_signals,
     compute_deliberation_version_hash,
     compute_informative_content_ratio,
     derive_source_types,
     drop_invented_citations,
     filter_audio_quotes_against_perception,
-    is_attendance_qr_phone_use,
+    excuse_attendance_qr_phone,
+    is_attendance_qr_phone_finding,
     parse_integrity_story,
     synthesize_integrity_story_fallback,
     validate_citation_rule,
@@ -703,6 +705,7 @@ def build_deliberation_bundle(
 
     validated: list[ValidatedSignal] = []
     rejected: list[RejectedSignal] = []
+    qr_excused_refs: set[str] = set()
     emitted_by_episode: dict[str, list[str]] = {}
 
     for raw_sig in raw_signals:
@@ -834,11 +837,18 @@ def build_deliberation_bundle(
             )
             continue
 
-        if is_attendance_qr_phone_use(
+        cited_before = set(trimmed.observations_cited)
+        trimmed, qr_outcome = excuse_attendance_qr_phone(
             trimmed,
             qr_intervals_ms=qr_intervals,
             phone_event_spans_ms=phone_event_spans,
-        ):
+        )
+        if qr_outcome == "stripped":
+            qr_excused_refs |= cited_before - set(trimmed.observations_cited)
+        if qr_outcome == "cleared":
+            qr_excused_refs |= cited_before | {MachineFactKind.QR_ATTENDANCE_SHOWN.value}
+            if raw_sig.episode_ref:
+                qr_excused_refs.add(str(raw_sig.episode_ref))
             rejected.append(
                 RejectedSignal(
                     signal_type=raw_sig.signal_type,
@@ -862,9 +872,10 @@ def build_deliberation_bundle(
         emitted_by_episode.setdefault(str(trimmed.episode_ref), []).append(signal_id)
         story = parse_integrity_story(trimmed.integrity_story) or synthesize_integrity_story_fallback(
             signal_type=trimmed.signal_type,
-            episode_summary=adjudicated_by_id.get(str(trimmed.episode_ref), RawEpisodeAnalysis(
-                "", "", [], [], "", "none", False
-            )).episode_summary,
+            # A stripped signal drops the episode summary: it narrates the excused phone.
+            episode_summary=None if qr_outcome == "stripped" else adjudicated_by_id.get(
+                str(trimmed.episode_ref), RawEpisodeAnalysis("", "", [], [], "", "none", False)
+            ).episode_summary,
             assisted_supporting=trimmed.hypothesis_assisted.get("supporting"),
             honest_supporting=trimmed.hypothesis_honest.get("supporting"),
             window_ids=inventory_episode.window_ids if inventory_episode else [],
@@ -919,9 +930,22 @@ def build_deliberation_bundle(
     raw_category = _pick_raw_text(raw, "category", "category", "")
     model_category = raw_category if raw_category in RECOMMENDATION_CATEGORIES else None
     model_confidence = raw.get("confidence")
+    # The model's own verdict still weighs a phone the attendance-QR rule excused;
+    # with nothing else active, the category is derived from the surviving signals.
+    track_b_findings = [
+        finding
+        for finding in input_data.video_findings or []
+        if not is_attendance_qr_phone_finding(finding, qr_intervals)
+    ]
+    qr_only_clear = (
+        any(r.rejected_by == "AttendanceQrRule" for r in rejected)
+        or len(track_b_findings) < len(input_data.video_findings or [])
+    ) and not active_validated_signals(validated)
+    if qr_only_clear:
+        model_category, model_confidence = None, None
     unified = compute_unified_score(
         validated,
-        input_data.video_findings or [],
+        track_b_findings,
         usable_window_ratio=usable_ratio,
         informative_content_ratio=informative_ratio,
         model_category=model_category,  # type: ignore[arg-type]
@@ -935,7 +959,17 @@ def build_deliberation_bundle(
     final_confidence = unified.confidence
     capture_cap = unified.capture_quality_cap_applied
     informative_cap = unified.informative_content_cap_applied
-    trust_behaviours = parse_trust_behaviours(raw)
+    trust_behaviours = [
+        behaviour
+        for behaviour in parse_trust_behaviours(raw)
+        if not (
+            behaviour.refs
+            and all(
+                any(ref == c or c.startswith(f"{ref}.") for c in qr_excused_refs)
+                for ref in behaviour.refs
+            )
+        )
+    ]
     if not trust_behaviours:
         trust_behaviours = fallback_behaviours(validated)
         if trust_behaviours:
@@ -975,6 +1009,16 @@ def build_deliberation_bundle(
     behavior_summary = plain_text(_pick_raw_text(raw, "behaviorSummary", "behavior_summary"))
     recommendation_text = plain_text(_pick_raw_text(raw, "recommendation", "recommendation"))
     reasoning = plain_text(_pick_raw_text(raw, "reasoning", "reasoning"))
+    if qr_only_clear and category == "CLEAR":
+        behavior_summary = (
+            "No malpractice was found. The only phone seen was during the exam's attendance "
+            "QR check, which the candidate is asked to show to the invigilator."
+        )
+        reasoning = (
+            "The phone was only seen while the exam showed its attendance QR; no other "
+            "behaviour indicated outside help."
+        )
+        recommendation_text = "No action needed."
     if category != "CLEAR":
         if _looks_like_clear_prose(behavior_summary):
             behavior_summary = (

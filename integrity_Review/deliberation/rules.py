@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..contracts.deliberation import (
@@ -352,38 +352,114 @@ PHONE_OBSERVATION_FIELDS = frozenset(
 PHONE_EVENT_KINDS = frozenset({"phone_visible", "phone_in_hand"})
 
 
-def is_attendance_qr_phone_use(
+NEUTRAL_OBSERVATION_FIELDS = frozenset(
+    {
+        "hands.handsVisible",
+        "hands.handCount",
+        "people.secondPersonVisible",
+        "people.secondPersonPosition",
+        "people.secondPersonLooksLike",
+    }
+)
+
+
+def _is_neutral_citation(field: str, value: str | None) -> bool:
+    if field in NEUTRAL_OBSERVATION_FIELDS or field.startswith("environment."):
+        return True
+    return field == "audio.speechContentClass" and value not in INTEGRITY_SPEECH_CONTENT_CLASSES
+
+
+def _signal_type_without_phone(signal_type: str, remaining: list[str]) -> str:
+    if signal_type != "possible_external_consultation":
+        return signal_type
+    fields = {parsed[1] for ref in remaining if (parsed := parse_observation_citation(ref))}
+    if any(field.startswith("audio.") for field in fields):
+        return "possible_audio_coaching"
+    if any(field.startswith("people.") for field in fields):
+        return "possible_second_person_involvement"
+    return signal_type
+
+
+def is_attendance_qr_phone_finding(finding: Any, qr_intervals_ms: list[tuple[int, int]]) -> bool:
+    if attr(finding, "event_type", "eventType") != "phone_usage":
+        return False
+    window = attr(finding, "timestamp_window_ms", "timestampWindowMs")
+    if not window:
+        return False
+    start, end = int(window[0]), int(window[1])
+    return any(
+        q_start - ATTENDANCE_QR_PAD_MS <= start and end <= q_end + ATTENDANCE_QR_PAD_MS
+        for q_start, q_end in qr_intervals_ms
+    )
+
+
+def excuse_attendance_qr_phone(
     signal: RawCandidateSignal,
     *,
     qr_intervals_ms: list[tuple[int, int]],
     phone_event_spans_ms: list[tuple[int, int]],
-) -> bool:
-    if not qr_intervals_ms or not signal.observations_cited:
-        return False
-    if any(kind in DEFINITIVE_SOLO_MACHINE_FACT_KINDS for kind in signal.machine_facts_cited):
-        return False
-    windows: list[tuple[int, int]] = []
-    for ref in signal.observations_cited:
+) -> tuple[RawCandidateSignal, str]:
+    """Drop phone evidence seen only while the attendance QR was up.
+
+    The exam asks the candidate to show its attendance QR to the invigilator, so a
+    phone whose every sighting in a cited window sits within a QR interval +/-
+    ATTENDANCE_QR_PAD_MS is that scan. A phone seen at any other time is untouched.
+    Returns the signal and "unchanged", "cleared" (nothing incriminating is left) or
+    "stripped" (kept on its remaining evidence, retyped away from the phone).
+    """
+
+    if not qr_intervals_ms:
+        return signal, "unchanged"
+
+    def excused(ref: str) -> bool:
         parsed = parse_observation_citation(ref)
         if parsed is None or parsed[1] not in PHONE_OBSERVATION_FIELDS:
             return False
         bounds = parsed[0].split("_")
         if len(bounds) != 3 or not bounds[1].isdigit() or not bounds[2].isdigit():
             return False
-        windows.append((int(bounds[1]), int(bounds[2])))
-    spans = [
-        (start, end)
-        for start, end in phone_event_spans_ms
-        if any(start < w_end and end > w_start for w_start, w_end in windows)
-    ]
-    if not spans:
-        return False
-    return all(
-        any(
-            qr_start - ATTENDANCE_QR_PAD_MS <= start and end <= qr_end + ATTENDANCE_QR_PAD_MS
-            for qr_start, qr_end in qr_intervals_ms
+        w_start, w_end = int(bounds[1]), int(bounds[2])
+        spans = [(a, b) for a, b in phone_event_spans_ms if a < w_end and b > w_start]
+        return bool(spans) and all(
+            any(
+                q_start - ATTENDANCE_QR_PAD_MS <= a and b <= q_end + ATTENDANCE_QR_PAD_MS
+                for q_start, q_end in qr_intervals_ms
+            )
+            for a, b in spans
         )
-        for start, end in spans
+
+    dropped = {ref for ref in signal.observations_cited if excused(ref)}
+    if not dropped:
+        return signal, "unchanged"
+    remaining = [ref for ref in signal.observations_cited if ref not in dropped]
+    incriminating = [
+        ref
+        for ref in remaining
+        if (parsed := parse_observation_citation(ref)) is None
+        or not _is_neutral_citation(parsed[1], parsed[2])
+    ]
+    if not incriminating and not any(
+        kind in DEFINITIVE_SOLO_MACHINE_FACT_KINDS for kind in signal.machine_facts_cited
+    ):
+        return signal, "cleared"
+
+    def without_phone(arm: dict[str, list[str]]) -> dict[str, list[str]]:
+        return {
+            key: [item for item in items if item not in dropped and "phone" not in item.lower()]
+            for key, items in arm.items()
+        }
+
+    return (
+        replace(
+            signal,
+            signal_type=_signal_type_without_phone(signal.signal_type, incriminating),
+            observations_cited=remaining,
+            hypothesis_honest=without_phone(signal.hypothesis_honest),
+            hypothesis_assisted=without_phone(signal.hypothesis_assisted),
+            why_rejected="" if "phone" in signal.why_rejected.lower() else signal.why_rejected,
+            integrity_story=None,
+        ),
+        "stripped",
     )
 
 
