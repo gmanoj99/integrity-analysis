@@ -45,6 +45,7 @@ from .rules import (
     FIELD_PATH_RESOLVERS,
     KNOWN_BASELINE_METRICS,
     PHONE_EVENT_KINDS,
+    PHONE_OBSERVATION_FIELDS,
     RawCandidateSignal,
     RawEpisodeAnalysis,
     SIGNAL_TYPES,
@@ -57,6 +58,7 @@ from .rules import (
     excuse_attendance_qr_phone,
     is_attendance_qr_phone_finding,
     parse_integrity_story,
+    parse_observation_citation,
     synthesize_integrity_story_fallback,
     validate_citation_rule,
     validate_episode_ref,
@@ -143,6 +145,17 @@ def _pick_raw_list(raw: Mapping[str, Any], camel: str, snake: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if item is not None and str(item).strip()]
+
+
+def _without_phone_sentences(text: str, fallback: str) -> str:
+    """Drop sentences about a phone the attendance-QR rule excused."""
+
+    kept = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", text.strip())
+        if sentence and "phone" not in sentence.lower()
+    ]
+    return " ".join(kept) or fallback
 
 
 def _looks_like_clear_prose(text: str) -> bool:
@@ -1009,6 +1022,18 @@ def build_deliberation_bundle(
     behavior_summary = plain_text(_pick_raw_text(raw, "behaviorSummary", "behavior_summary"))
     recommendation_text = plain_text(_pick_raw_text(raw, "recommendation", "recommendation"))
     reasoning = plain_text(_pick_raw_text(raw, "reasoning", "reasoning"))
+    phone_still_cited = any(
+        (parsed := parse_observation_citation(ref)) is not None
+        and parsed[1] in PHONE_OBSERVATION_FIELDS
+        for signal in active_validated_signals(validated)
+        for ref in signal.observations_cited
+    )
+    if qr_excused_refs and not phone_still_cited:
+        behavior_summary = _without_phone_sentences(behavior_summary, behavior_summary)
+        reasoning = _without_phone_sentences(reasoning, reasoning)
+        recommendation_text = _without_phone_sentences(
+            recommendation_text, "Review the flagged moments before deciding."
+        )
     if qr_only_clear and category == "CLEAR":
         behavior_summary = (
             "No malpractice was found. The only phone seen was during the exam's attendance "
