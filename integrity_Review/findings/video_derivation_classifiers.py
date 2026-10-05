@@ -7,20 +7,19 @@ from math import log10
 from ..contracts.perception import PerceptionBundle, PerceptionObservation
 from .contracts import ClearedItem, ContextualEvent, CriticalMoment, EvidenceFinding, SpeechProof, UnknownItem
 from .video_derivation_core import (
-    ADMIN_SPEECH_CLASSES,
     CONTEXT_SPEECH_CLASSES,
     DERIVATION_CONFIG,
     Episode,
     INTEGRITY_SPEECH_CLASSES,
+    INTERACTION_SPEECH_CLASSES,
     OFF_ZONES,
     SEV_WEIGHT,
     _capture_issue,
     _mk_finding,
     _sec,
     build_episodes,
-    has_admin_speech,
     has_integrity_speech,
-    has_only_cleared_speech,
+    has_interaction_speech,
     pick_proof_anchors,
 )
 
@@ -213,19 +212,6 @@ def classify_second_person(live: list[PerceptionObservation], bundle: Perception
                 )
             )
             continue
-        invigilator = any(o.people.second_person_role_cue == "invigilator_or_staff" for o in ep.observations)
-        if (invigilator or has_admin_speech(ep.observations)) and not has_integrity_speech(ep.observations):
-            cleared.append(
-                ClearedItem(
-                    event_type="multiple_faces",
-                    reason="invigilator_or_staff_presence" if invigilator else "invigilator_audio_presence",
-                    note=f"Second person ~{dur_sec}s with admin/non-cheating audio.",
-                    window_ids=ep.window_ids,
-                    timestamp_window_ms=span,
-                    duration_sec=dur_sec,
-                )
-            )
-            continue
         if interacting:
             gaze_diverted = any(
                 o.people.candidate_responding_to_second_person == "yes"
@@ -235,7 +221,7 @@ def classify_second_person(live: list[PerceptionObservation], bundle: Perception
                     and o.attention.gaze_direction not in {"screen", "down", "UNKNOWN"}
                 )
                 for o in ep.observations
-            ) or has_integrity_speech(ep.observations)
+            ) or has_interaction_speech(ep.observations)
             if not gaze_diverted:
                 cleared.append(
                     ClearedItem(
@@ -559,14 +545,24 @@ def classify_speech(live: list[PerceptionObservation], bundle: PerceptionBundle)
                 )
             )
             continue
+        if content_class in INTERACTION_SPEECH_CLASSES:
+            findings.append(
+                _mk_finding(
+                    "external_help",
+                    ep,
+                    bundle,
+                    attribution="other_person",
+                    severity="medium",
+                    evidence_strength="moderate",
+                    verdict="flagged",
+                    reasoning=f"Conversation with another person ({content_class}) ~{dur_sec}s.",
+                    speech_proof=speech_proof,
+                    gap_ms_to_next=gap_ms_to_next,
+                )
+            )
+            continue
         if content_class in CONTEXT_SPEECH_CLASSES:
-            ctx_type = {
-                "invigilator_or_admin": "invigilator_interaction",
-                "technical_exam_help": "technical_exam_help",
-                "self_talk_or_thinking": "self_talk",
-                "reading_question": "self_talk",
-                "casual_non_exam": "casual_non_exam",
-            }.get(content_class, "exam_hall_ambient")
+            ctx_type = "self_talk"
             contextual.append(
                 ContextualEvent(
                     event_type=ctx_type,

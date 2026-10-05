@@ -78,6 +78,9 @@ _INTEGRITY_SPEECH = {
     "receiving_dictation",
     "discussing_solution",
     "reciting_answer_choices",
+    "invigilator_or_admin",
+    "technical_exam_help",
+    "casual_non_exam",
 }
 
 
@@ -131,8 +134,6 @@ MAX_SPEECH_MOMENTS = 3
 
 
 def _heard_in_window(perception_bundle: Any, window: tuple[int, int]) -> str | None:
-    """What was said in the window: exam-relevant speech first, then time order."""
-
     moments: list[tuple[int, int, str]] = []
     seen: set[str] = set()
     for observation in attr(perception_bundle, "observations", default=[]) or []:

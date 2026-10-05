@@ -37,18 +37,21 @@ SIGNAL_TYPES = frozenset(
     }
 )
 
-INTEGRITY_SPEECH_CONTENT_CLASSES = frozenset(
+FLAGGABLE_SPEECH_CONTENT_CLASSES = frozenset(
     {
         "asking_for_answer",
         "receiving_dictation",
         "discussing_solution",
         "reciting_answer_choices",
+        "invigilator_or_admin",
+        "technical_exam_help",
+        "casual_non_exam",
     }
 )
 
 DEFINITIVE_SOLO_OBSERVATION_FIELDS: dict[str, frozenset[str]] = {
     "hands.objectInHand": frozenset({"phone"}),
-    "audio.speechContentClass": INTEGRITY_SPEECH_CONTENT_CLASSES,
+    "audio.speechContentClass": FLAGGABLE_SPEECH_CONTENT_CLASSES,
 }
 
 DEFINITIVE_SOLO_MACHINE_FACT_KINDS = frozenset(
@@ -366,7 +369,7 @@ NEUTRAL_OBSERVATION_FIELDS = frozenset(
 def _is_neutral_citation(field: str, value: str | None) -> bool:
     if field in NEUTRAL_OBSERVATION_FIELDS or field.startswith("environment."):
         return True
-    return field == "audio.speechContentClass" and value not in INTEGRITY_SPEECH_CONTENT_CLASSES
+    return field == "audio.speechContentClass" and value not in FLAGGABLE_SPEECH_CONTENT_CLASSES
 
 
 def _signal_type_without_phone(signal_type: str, remaining: list[str]) -> str:
@@ -513,7 +516,7 @@ def has_definitive_solo_evidence(
     interaction = _cited_observation_value(obs_cited, "people.secondPersonInteracting")
     activity = _cited_observation_value(obs_cited, "people.secondPersonActivity")
     interaction_confirmed = interaction == "yes" or activity == "speaking_to_candidate"
-    if interaction_confirmed and speech in INTEGRITY_SPEECH_CONTENT_CLASSES:
+    if interaction_confirmed and speech in FLAGGABLE_SPEECH_CONTENT_CLASSES:
         return True
 
     gaze = _cited_observation_value(obs_cited, "attention.gazeDirection")
@@ -522,7 +525,7 @@ def has_definitive_solo_evidence(
         return True
 
     visible = _cited_observation_value(obs_cited, "people.secondPersonVisible") == "yes"
-    if visible and diverted_gaze and speech in INTEGRITY_SPEECH_CONTENT_CLASSES:
+    if visible and diverted_gaze and speech in FLAGGABLE_SPEECH_CONTENT_CLASSES:
         return True
 
     if signal.signal_type == "abnormal_paste_workflow" and episode_factor_ids:

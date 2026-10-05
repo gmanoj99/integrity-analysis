@@ -193,11 +193,6 @@ def resolve_media_types(chunks: list[ChunkUrl]) -> list[ChunkUrl]:
 
 
 def identity_from_key(s3_key: str) -> tuple[str, str, str]:
-    """Recover (attempt_user_id, org_assess_id, exam_attempt_id) from the key.
-
-    v3 keys are ``.../user_session_recordings/{a}/{b}/{c}/v3/{stem}.webm`` and
-    the sidecar metadata's ``uploaderPathIdentifier`` is exactly ``a/b/c``.
-    """
 
     parts = PurePosixPath(s3_key).parts
     # Camera recordings carry the same {a}/{b}/{c} triple under their own
@@ -217,7 +212,8 @@ def identity_from_key(s3_key: str) -> tuple[str, str, str]:
     tail = parts[anchor + 1 : anchor + 4]
     if len(tail) < 3:
         return ("local-candidate", "local-assessment", "local-attempt")
-    return (tail[0], tail[1], tail[2])
+    org_assess_id, attempt_user_id, exam_attempt_id = tail
+    return (attempt_user_id, org_assess_id, exam_attempt_id)
 
 
 def iso_utc(epoch_ms: int) -> str:

@@ -16,7 +16,7 @@ An episode may emit a signal whenever the evidence supports it. A single modalit
 Session-scoped episodes never suffice alone.
 Sustained face absence or the candidate leaving the camera frame (identity.facePresent=no, body.leftSeat=yes, or a long face_absent / no_candidate episode) is flaggable when it is not explained by capture quality alone — prefer emitting over clearing when the candidate controlled the absence.
 `provisionalLane=amber` marks an episode deterministic code deliberately did not decide. You decide it from the observations AND the perception `summary:` lines printed under its windows (a person seated next to the candidate watching their screen is interaction evidence; a person in the background is not); cite the field=value rows, never the summary text: clearing it and emitting from it are equally valid outcomes, and "not enough to say" is a real answer — record it in `reasonNotSignalled`.
-State the honest reading where one fits rather than suppressing it: invigilator or staff contact (people.secondPersonRoleCue=invigilator_or_staff, handing papers, addressing the room), ambient voices in a shared hall with people.candidateRespondingToSecondPerson=no, and the candidate talking to themselves are all normal exam conduct. Clearing them is the correct call, not a missed detection. QR_ATTENDANCE_SHOWN marks when the exam displayed its attendance QR, which the candidate must show to the invigilator: a phone seen within 15 seconds of it is that scan, not outside help.
+Any interaction between the candidate and another person is flaggable WHATEVER it is about — answer discussion, casual or personal chat, technical help (speechContentClass casual_non_exam, invigilator_or_admin and technical_exam_help included). Never clear an interaction because its topic was not the exam; say what the talk was about in `whatHappened` and let `confidence` reflect how clearly the interaction happened. Not interaction: ambient voices in a shared hall with people.candidateRespondingToSecondPerson=no, a person in the background or passing by, and the candidate talking to themselves or reading the question aloud — clearing those is the correct call. QR_ATTENDANCE_SHOWN marks when the exam displayed its attendance QR, which the candidate must show to the invigilator: a phone seen within 15 seconds of it is that scan, not outside help.
 
 TRACK 2 — OPEN SCAN (bounded)
 Beyond the inventory, scan MACHINE FACTS / PERCEPTION EVENTS / BASELINE for cross-modal probable-cheating patterns the inventory missed. Propose new episodes with episodeId "model_ep1", "model_ep2", … (origin model_identified). They MUST pass the same citation and hard rules.
@@ -42,22 +42,23 @@ Choose signalType from that signal's own evidence:
 6. In exam_hall/shared_space settings, require interaction evidence; background persons alone are not evidence.
 7. Do not attribute a phone to the candidate when another person is present unless ownership or interaction is clear.
 8. Address citable evidence-strength and attribution priors when present.
-9. The catalogue's DEFINITIVE / COMBINABLE labels calibrate `confidence`, they do not gate emission. DEFINITIVE evidence alone (hands.objectInHand=phone; integrity-related audio.speechContentClass; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE) warrants high confidence. SCREEN_PASTE is not in that list: it records that a paste happened, not that it came from outside. A single COMBINABLE observation may still be emitted at correspondingly lower confidence with `resolution: ambiguous`.
+9. The catalogue's DEFINITIVE / COMBINABLE labels calibrate `confidence`, they do not gate emission. DEFINITIVE evidence alone (hands.objectInHand=phone; audio.speechContentClass showing a conversation with another person, on any topic; SCREEN_EXTERNAL_RESOURCE; SCREEN_AI_ASSISTANT_UI; SCREEN_EXTERNAL_PASTE) warrants high confidence. SCREEN_PASTE is not in that list: it records that a paste happened, not that it came from outside. A single COMBINABLE observation may still be emitted at correspondingly lower confidence with `resolution: ambiguous`.
 
 === SIGNAL CATALOGUE ===
 
 possible_external_consultation
   DEFINITIVE: candidate holding phone; answer-related speech with a real conversation summary; external resource or AI UI matching the active question.
   COMBINABLE: repeated phone visibility; interaction plus diverted gaze; nearby paste, blur, baseline anomaly.
-  Honest: unused phone, non-interacting family, invigilator or technical help, self-talk.
+  Honest: unused phone, non-interacting family, self-talk.
 
 possible_second_person_involvement
-  DEFINITIVE: second-person interaction plus answer-related speech; or interaction plus candidate gaze toward that person.
+  DEFINITIVE: second-person interaction plus conversation of any topic; or interaction plus candidate gaze toward that person.
   COMBINABLE: sustained person visibility plus confirmed interaction. Presence alone is insufficient.
+  An invigilator, family member or anyone else counts — the person's role and the topic do not excuse the interaction.
 
 possible_audio_coaching
-  DEFINITIVE: speechContentClass in {asking_for_answer, receiving_dictation, discussing_solution, reciting_answer_choices} with a non-empty conversationSummaryEn.
-  Other speech classes remain CLEAR.
+  DEFINITIVE: speechContentClass in {asking_for_answer, receiving_dictation, discussing_solution, reciting_answer_choices, invigilator_or_admin, technical_exam_help, casual_non_exam} with a non-empty conversationSummaryEn.
+  self_talk_or_thinking, reading_question and unclear remain CLEAR unless another person is shown to be interacting.
 
 possible_remote_dictation
   Require speech/lip mismatch with conversationSummaryEn plus headphones, phone, nearby paste/typing, or an AV-mismatch factor.
@@ -111,11 +112,14 @@ It is NOT how sure you are that it happened — that is `confidence`, which you 
            Left the exam area at length; reference material open; a large external
            paste into an answer field.
 0.25-0.54  Repeated protocol deviation consistent with, but not proof of, outside
-           help. Recurrent off-screen gaze; fullscreen lost; second workspace visible.
+           help. Recurrent off-screen gaze; fullscreen lost; second workspace visible;
+           a conversation with another person not about the answer (casual chat,
+           invigilator or staff talk, technical help) — higher the longer it ran.
 0.05-0.24  A minor deviation the candidate controlled, better explained honestly.
-           Non-exam talking; a phone visible but never handled; occasional glances.
-0.00       Not the candidate's doing, or not a real event. Environment, invigilator
-           or staff, reflections and posters, capture-quality gaps, misclassification.
+           A phone visible but never handled; occasional glances.
+0.00       Not the candidate's doing, or not a real event. Environment, background
+           people not interacting, reflections and posters, capture-quality gaps,
+           misclassification.
 
 Rules:
 - Emit ONE behaviour per DISTINCT PATTERN, never one per occurrence. Twelve gaze episodes from one habit are one behaviour; weigh their duration and recurrence inside that single impact value.

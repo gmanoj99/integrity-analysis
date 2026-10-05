@@ -20,7 +20,6 @@ from .video_derivation_classifiers import (
 from .video_derivation_core import (
     _id_seq,
     _is_usable,
-    _sec,
     pick_proof_anchors,
 )
 
@@ -54,7 +53,7 @@ def derive_video_findings_from_perception(
     wearables = classify_audio_wearables(usable, bundle)
     speech = classify_speech(usable, bundle)
 
-    flagged_raw = [
+    flagged: list[EvidenceFinding] = [
         *face["findings"],
         *people["findings"],
         *gaze["findings"],
@@ -70,42 +69,6 @@ def derive_video_findings_from_perception(
         *wearables["cleared"],
         *speech["cleared"],
     ]
-
-    admin_spans = [
-        e.timestamp_window_ms
-        for e in speech["contextual"]
-        if e.event_type in {"invigilator_interaction", "technical_exam_help"}
-    ]
-    integrity_spans = [f.timestamp_window_ms for f in speech["findings"]]
-
-    def overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
-        return a[0] < b[1] and b[0] < a[1]
-
-    flagged: list[EvidenceFinding] = []
-    for finding in flagged_raw:
-        if finding.event_type not in {"external_help", "multiple_faces"}:
-            flagged.append(finding)
-            continue
-        if not any(overlaps(finding.timestamp_window_ms, s) for s in admin_spans):
-            flagged.append(finding)
-            continue
-        if any(overlaps(finding.timestamp_window_ms, s) for s in integrity_spans):
-            flagged.append(finding)
-            continue
-        cleared_ledger.append(
-            ClearedItem(
-                event_type=finding.event_type,
-                reason="cross_modal_invigilator_audio",
-                note=(
-                    f"Cleared: {finding.event_type} overlapped invigilator/admin speech "
-                    "with no answer-discussion audio."
-                ),
-                window_ids=[],
-                timestamp_window_ms=finding.timestamp_window_ms,
-                duration_sec=max(1, _sec(finding.timestamp_window_ms[1] - finding.timestamp_window_ms[0])),
-                speech_proof=finding.speech_proof,
-            )
-        )
 
     unknown_ledger = [*face["unknowns"], *people["unknowns"], *speech["unknowns"]]
     contextual_events = speech["contextual"]
@@ -164,7 +127,7 @@ def derive_video_findings_from_perception(
     if count("suspicious_eye_movement"):
         parts.append(f"Recurring off-screen gaze: {count('suspicious_eye_movement')}.")
     if contextual_events:
-        parts.append(f"Contextual (non-scoring) speech/admin events: {len(contextual_events)}.")
+        parts.append(f"Contextual (non-scoring) self-talk events: {len(contextual_events)}.")
     if cleared_findings:
         parts.append(f"Cleared as normal/environment: {len(cleared_findings)} episode(s).")
     if unknown_ledger:

@@ -37,14 +37,15 @@ INTEGRITY_SPEECH_CLASSES = {
     "discussing_solution",
     "reciting_answer_choices",
 }
-CONTEXT_SPEECH_CLASSES = {
+INTERACTION_SPEECH_CLASSES = {
     "invigilator_or_admin",
     "technical_exam_help",
-    "self_talk_or_thinking",
     "casual_non_exam",
+}
+CONTEXT_SPEECH_CLASSES = {
+    "self_talk_or_thinking",
     "reading_question",
 }
-ADMIN_SPEECH_CLASSES = {"invigilator_or_admin", "technical_exam_help"}
 OFF_ZONES = {"left", "right", "down", "up", "away"}
 SEV_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 
@@ -168,23 +169,12 @@ def has_integrity_speech(obs: list[PerceptionObservation]) -> bool:
     )
 
 
-def has_admin_speech(obs: list[PerceptionObservation]) -> bool:
+def has_interaction_speech(obs: list[PerceptionObservation]) -> bool:
     return any(
-        o.audio.speech_content_class in ADMIN_SPEECH_CLASSES for o in obs if o.audio.speech_content_class
-    )
-
-
-def has_only_cleared_speech(obs: list[PerceptionObservation]) -> bool:
-    classes = [
-        o.audio.speech_content_class
+        o.audio.speech_content_class in INTEGRITY_SPEECH_CLASSES | INTERACTION_SPEECH_CLASSES
         for o in obs
-        if o.audio.speech_content_class not in {None, "UNKNOWN", "silence"}
-    ]
-    if not classes:
-        return False
-    if any(c in INTEGRITY_SPEECH_CLASSES for c in classes):
-        return False
-    return all(c in CONTEXT_SPEECH_CLASSES or c in ADMIN_SPEECH_CLASSES for c in classes)
+        if o.audio.speech_content_class
+    )
 
 
 def _mk_finding(
