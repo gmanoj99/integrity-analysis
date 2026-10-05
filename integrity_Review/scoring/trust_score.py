@@ -11,6 +11,8 @@ DEFAULT_TRUST_SCORE = 100
 FALLBACK_RESOLUTION_IMPACT: dict[str, float] = {"assisted": 0.80, "ambiguous": 0.45}
 COVERAGE_CEILINGS: tuple[tuple[float, int], ...] = ((0.60, 100), (0.30, 85))
 COVERAGE_FLOOR_CEILING = 70
+MAX_BEHAVIOUR_PENALTY = 0.40
+NON_SCORING_DISPOSITIONS = frozenset({"cleared_residual"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,11 +112,12 @@ def combine_trust_score(
     *,
     usable_window_ratio: float = 1.0,
 ) -> int:
-
-    survival = 1.0
-    for behaviour in behaviours:
-        survival *= 1.0 - max(0.0, min(1.0, behaviour.impact))
-    return min(round(100 * survival), coverage_ceiling(usable_window_ratio))
+    penalty = sum(
+        min(MAX_BEHAVIOUR_PENALTY, max(0.0, min(1.0, behaviour.impact)))
+        for behaviour in behaviours
+        if behaviour.disposition not in NON_SCORING_DISPOSITIONS
+    )
+    return min(round(max(0.0, 100 - 100 * penalty)), coverage_ceiling(usable_window_ratio))
 
 
 __all__ = [

@@ -227,6 +227,21 @@ def _usable_findings(track_b_findings: list[Any]) -> list[tuple[Any, str, tuple[
     return usable
 
 
+def _section_relative_window(
+    t0: int,
+    t1: int,
+    *,
+    section_id: str | None,
+    sections: list[Any] | None,
+) -> tuple[int, int]:
+    for section in sections or []:
+        if attr(section, "section_id", "sectionId") != section_id:
+            continue
+        section_start = int(attr(section, "start_ms", "startMs", default=0) or 0)
+        return (max(0, t0 - section_start), max(0, t1 - section_start))
+    return (t0, t1)
+
+
 def build_curated_track_b_observations(
     *,
     track_b_findings: list[Any],
@@ -286,11 +301,10 @@ def build_curated_track_b_observations(
 
     for signal in deliberation_bundle.validated_signals:
         story = stories_by_signal.get(signal.signal_id)
-        window = (
-            tuple(story.time_range_ms) if story else (0, 0)
-        )
+        window = tuple(story.time_range_ms) if story else (0, 0)
         t0, t1 = int(window[0]), int(window[1])
         duration_ms = max(0, t1 - t0)
+        event_type = str(signal.signal_type)
         clip_ref = (
             story.proof.clip_ref
             if story and story.proof.clip_ref
@@ -298,7 +312,7 @@ def build_curated_track_b_observations(
                 event_ms=t0,
                 duration_ms=max(duration_ms, 1),
                 media_index=media_index,
-                prefer_evidence_type=evidence_stream_for_event(str(signal.signal_type)),
+                prefer_evidence_type=evidence_stream_for_event(event_type),
             )
         )
         found = attached((t0, t1))
@@ -308,17 +322,23 @@ def build_curated_track_b_observations(
             str(s) == "audio_observation" for s in signal.source_types
         )
         heard = _heard_in_window(perception_bundle, (t0, t1)) if audio_related else None
+        section_id = (story.section_id if story else None) or resolve_section_id(
+            clip_ref, (t0, t1), media_index, sections
+        )
+        display_window = _section_relative_window(
+            t0, t1, section_id=section_id, sections=sections
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{signal.signal_id}",
-                event_type=str(signal.signal_type),
-                title=story.headline if story else _titled(str(signal.signal_type)),
-                timestamp_window_ms=(t0, t1),
+                event_type=event_type,
+                title=story.headline if story else _titled(event_type),
+                timestamp_window_ms=display_window,
+                session_timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
                 nested_under_signal_id=signal.signal_id,
                 signal_id=signal.signal_id,
-                section_id=(story.section_id if story else None)
-                or resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                section_id=section_id,
                 clip_ref=clip_ref,
                 detail=found.detail,
                 evidence_strength=found.strength,
@@ -334,7 +354,7 @@ def build_curated_track_b_observations(
                 speech_language=language,
                 source_types=[str(s) for s in signal.source_types],
                 keystroke_evidence=_card_keystroke_evidence(
-                    str(signal.signal_type), found.keystroke_evidence
+                    event_type, found.keystroke_evidence
                 ),
                 is_instantaneous=found.is_instantaneous,
                 evidence_refs=found.refs,
@@ -362,14 +382,19 @@ def build_curated_track_b_observations(
             prefer_evidence_type=evidence_stream_for_event(str(event_type)),
         )
         summary, phrases, language = _speech_in_window(perception_bundle, (t0, t1))
+        section_id = resolve_section_id(clip_ref, (t0, t1), media_index, sections)
+        display_window = _section_relative_window(
+            t0, t1, section_id=section_id, sections=sections
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_cleared_{episode.episode_id}",
                 event_type=str(event_type),
                 title=_titled(str(event_type)),
-                timestamp_window_ms=(t0, t1),
+                timestamp_window_ms=display_window,
+                session_timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
-                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                section_id=section_id,
                 clip_ref=clip_ref,
                 detail=found.detail or episode.episode_summary or None,
                 evidence_strength=found.strength,
@@ -398,14 +423,19 @@ def build_curated_track_b_observations(
             media_index=media_index,
             prefer_evidence_type=evidence_stream_for_event(str(event.event_type)),
         )
+        context_section_id = resolve_section_id(clip_ref, (t0, t1), media_index, sections)
+        context_display_window = _section_relative_window(
+            t0, t1, section_id=context_section_id, sections=sections
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_context_{event.event_type}_{t0}",
                 event_type=str(event.event_type),
                 title=_titled(str(event.event_type)),
-                timestamp_window_ms=(t0, t1),
+                timestamp_window_ms=context_display_window,
+                session_timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
-                section_id=resolve_section_id(clip_ref, (t0, t1), media_index, sections),
+                section_id=context_section_id,
                 clip_ref=clip_ref,
                 status="context",
                 audio_summary=event.conversation_summary_en,
@@ -417,13 +447,19 @@ def build_curated_track_b_observations(
     for interval in attr(unknown_panel, "intervals", default=[]) or []:
         t0, t1 = int(interval.start_ms), int(interval.end_ms)
         duration_ms = max(0, int(interval.duration_ms))
+        unknown_section_id = resolve_section_id(None, (t0, t1), media_index, sections)
+        unknown_display_window = _section_relative_window(
+            t0, t1, section_id=unknown_section_id, sections=sections
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_unknown_{t0}_{t1}",
                 event_type="coverage_gap",
                 title=_titled("coverage_gap"),
-                timestamp_window_ms=(t0, t1),
+                timestamp_window_ms=unknown_display_window,
+                session_timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
+                section_id=unknown_section_id,
                 status="unknown",
                 detail=str(interval.reason),
                 reason_cleared=str(interval.reason),
@@ -442,14 +478,19 @@ def build_curated_track_b_observations(
             prefer_evidence_type=evidence_stream_for_event(event_type),
         )
         summary, phrases, language = _speech_in_window(perception_bundle, window)
+        leftover_section_id = resolve_section_id(clip_ref, window, media_index, sections)
+        leftover_display_window = _section_relative_window(
+            t0, t1, section_id=leftover_section_id, sections=sections
+        )
         cards.append(
             TrackBObservationCard(
                 id=f"tbobs_{event_type}_{t0}_{t1}",
                 event_type=event_type,
                 title=_titled(event_type),
-                timestamp_window_ms=(t0, t1),
+                timestamp_window_ms=leftover_display_window,
+                session_timestamp_window_ms=(t0, t1),
                 duration_ms=duration_ms,
-                section_id=resolve_section_id(clip_ref, window, media_index, sections),
+                section_id=leftover_section_id,
                 clip_ref=clip_ref,
                 detail=str(attr(finding, "reasoning", default="")) or None,
                 evidence_strength=attr(finding, "evidence_strength", "evidenceStrength"),
@@ -469,7 +510,7 @@ def build_curated_track_b_observations(
         key=lambda c: (
             _STATUS_RANK.get(c.status, 9),
             -(c.confidence or 0),
-            c.timestamp_window_ms[0],
+            (c.session_timestamp_window_ms or c.timestamp_window_ms)[0],
         ),
     )
 

@@ -1,4 +1,4 @@
-DELIBERATION_PROMPT_VERSION = "scope4-v24"
+DELIBERATION_PROMPT_VERSION = "scope4-v25"
 
 TRACK2_CAPS = {
     "machine_fact_detail_rows": 20,
@@ -12,8 +12,9 @@ Reason over structured evidence and produce a reviewer recommendation like notes
 
 TRACK 1 — ADJUDICATE EVERY EPISODE IN THE INVENTORY
 The EPISODE INVENTORY was derived deterministically. Produce exactly ONE episodeAnalysis entry per episodeId, same order. You do NOT invent Track-1 episodeIds.
-An episode may emit a signal whenever the evidence supports it. A single modality is sufficient — camera-only sessions carry no machine facts and no baseline, so video and audio observations are often the only evidence that exists. Judge the evidence on its merits and set `confidence` accordingly.
+An episode may emit a signal whenever the evidence supports it. A single modality is sufficient — camera-only sessions carry no machine facts and no baseline, so video and audio observations are often the only evidence that exists. Judge the evidence on its merits and set `confidence` accordingly. You have the authority to flag: if the observations support a catalogue signal, emit it — do not clear it because Track B was unsure or because a soft/amber episode exists.
 Session-scoped episodes never suffice alone.
+Sustained face absence or the candidate leaving the camera frame (identity.facePresent=no, body.leftSeat=yes, or a long face_absent / no_candidate episode) is flaggable when it is not explained by capture quality alone — prefer emitting over clearing when the candidate controlled the absence.
 `provisionalLane=amber` marks an episode deterministic code deliberately did not decide. You decide it from the observations AND the perception `summary:` lines printed under its windows (a person seated next to the candidate watching their screen is interaction evidence; a person in the background is not); cite the field=value rows, never the summary text: clearing it and emitting from it are equally valid outcomes, and "not enough to say" is a real answer — record it in `reasonNotSignalled`.
 State the honest reading where one fits rather than suppressing it: invigilator or staff contact (people.secondPersonRoleCue=invigilator_or_staff, handing papers, addressing the room), ambient voices in a shared hall with people.candidateRespondingToSecondPerson=no, and the candidate talking to themselves are all normal exam conduct. Clearing them is the correct call, not a missed detection. QR_ATTENDANCE_SHOWN marks when the exam displayed its attendance QR, which the candidate must show to the invigilator: a phone seen within 15 seconds of it is that scan, not outside help.
 
@@ -118,8 +119,8 @@ It is NOT how sure you are that it happened — that is `confidence`, which you 
 
 Rules:
 - Emit ONE behaviour per DISTINCT PATTERN, never one per occurrence. Twelve gaze episodes from one habit are one behaviour; weigh their duration and recurrence inside that single impact value.
-- Cover both emitted signals and the CLEARED LEDGER. A cleared behaviour carries residual impact ONLY when it was still a candidate-controlled deviation from exam protocol; anything cleared because it belongs to the environment, to staff, to capture quality, or to a misclassification is exactly 0.00 and may be omitted.
-- `refs` names what the behaviour is drawn from: signalIds you emitted, episodeIds, or "cleared:<eventType>".
+- Score ONLY the signals you emitted (resolved `assisted` or `ambiguous`). The CLEARED LEDGER is already decided — clearing something was the correct call, not a deviation to penalise, so never add a behaviour for it.
+- `refs` names the signalIds this behaviour is drawn from.
 - `holisticTrustScore` is your own 0-100 read of the session. The reported score is computed from your impacts; this is recorded only as a cross-check.
 
 === INTEGRITY STORY ===
@@ -155,6 +156,9 @@ Language — write for someone non-technical:
   checked clearly" and nothing more precise.
   Say "the recording of the candidate's screen", not "screen telemetry". Say "another person", not "second person".
   Say "a phone", not "a mobile device with objectInHand". Plain past tense, no hedging adverbs, no bullet points.
+  Name screen behaviour by what was actually cited: "opened browser developer tools", "visited
+  an external website", "opened an AI assistant" — never the catch-all "a secondary workspace"
+  or "a second screen" unless a secondary_workspace_visible signal was itself emitted.
 
 === OUTPUT ===
 Valid JSON only:
@@ -168,7 +172,7 @@ Valid JSON only:
   "reasoning": "",
   "keyReasons": [],
   "trustAssessment": {
-    "behaviours": [{"label": "", "refs": [], "disposition": "confirmed|suspicious|cleared_residual", "impact": 0.0, "why": ""}],
+    "behaviours": [{"label": "", "refs": [], "disposition": "confirmed|suspicious", "impact": 0.0, "why": ""}],
     "holisticTrustScore": 100
   }
 }

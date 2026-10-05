@@ -132,6 +132,7 @@ class TrackBObservationCard(ContractModel):
     event_type: str
     title: str
     timestamp_window_ms: tuple[int, int]
+    session_timestamp_window_ms: tuple[int, int] | None = None
     duration_ms: int = Field(ge=0)
     nested_under_signal_id: str | None = None
     section_id: str | None = None
